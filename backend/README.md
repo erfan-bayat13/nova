@@ -6,7 +6,7 @@ The real backend behind the canvas. It speaks [docs/PROTOCOL.md](../docs/PROTOCO
 
 ```
 canvas (ui/) ⇄ ws :8765/canvas ⇄ orchestrator.py ⇄ SessionManager ⇄ llama-server :8080 /v1/realtime
-                                      └─ escalate.py (Claude, STUB)
+                                      └─ escalate.py (Claude API) ─ learned/*.json
 ```
 
 ## Run
@@ -71,13 +71,48 @@ Measured 2026-11-07 (M2 8 GB, warm server, text input):
 | Speech vs. text | ASR of the streamed audio matched the reply text word for word |
 | Interrupt (`orb_down` mid-reply) | turn ends 0.17 s later; the next turn answered normally |
 
+## Cloud escalation and learned widgets
+
+"The cloud teaches, the local model remembers" ([docs/CONCEPT.md](../docs/CONCEPT.md)). When the local model calls
+`escalate`, `escalate.py` asks Claude (plain HTTPS POST with `httpx`, async, ~60 s timeout, one retry on 429/5xx).
+Claude answers with one JSON object: a built-in widget, an already learned widget, or a **new** widget as a complete
+self-contained HTML document (it gets its data by `postMessage({type:'props', data})` and sends events with
+`parent.postMessage({type:'emit', name, data}, '*')`, see [PROTOCOL.md](../docs/PROTOCOL.md)). The answer is checked
+(html under 60 KB, no `<script src`, external URLs, `fetch(`, `XMLHttpRequest`); a bad one is sent back to Claude once,
+then the result is a plain note card. Without a key the card says "Cloud help needs ANTHROPIC_API_KEY". `escalate()`
+never raises and keeps its return value: `{widget, props, importance, say}`.
+
+| Env var | Default | |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | none | Required. Read on every call. |
+| `ANTHROPIC_BASE_URL` | `https://api.anthropic.com` | A proxy or a local mock server |
+| `ESCALATE_MODEL` | `claude-sonnet-5-5` | |
+| `ESCALATE_TIMEOUT` | `60` | Seconds per request |
+| `ESCALATE_EFFORT` | `medium` | Sent as `output_config.effort`; `off` leaves it out (models without effort) |
+
+**`learned/`**: a new html widget is saved as `backend/learned/<name>.json`
+(`{name, description, props_doc, html, sample_data, created, height?}`; committed on purpose, `.gitkeep` keeps the
+folder). `tools.py` re-reads it on every call, so the widget is available from the **next session** on (no restart) as
+the widget type `learned_<name>`: `all_widget_types()`, `tool_defs()` and `widget_docs_text()` include it (description
+and `props_doc` only, never the code). `create_widget` of a learned type becomes an `html` widget with
+`props = {html, data: <what the model passed>, height: <saved or 280>}`, and `update_widget` merges its props into `data`.
+A `learned_*` type that was never saved is rejected like any unknown type. To forget a widget, delete its file.
+
+Test (a mock Messages API on localhost, a temp folder for learned widgets, nothing leaves the machine):
+
+```bash
+python3 backend/test_escalate.py
+```
+
 ## Files
 
 | File | What |
 |---|---|
 | `orchestrator.py` | WebSocket server, one `Connection` per canvas: buffers mic audio, runs model turns, tool loop, orb states, events, escalation UX |
 | `tools.py` | Tool definitions for the model (built from the canvas's `hello` widget list) and `to_canvas()`: tool call → canvas messages |
-| `escalate.py` | **Stub** for the Claude path. Returns a placeholder `html` widget after 1.5 s. Its docstring has the contract and the plan. |
+| `escalate.py` | The Claude path: Messages API call, answer validation, saves new widgets to `learned/`. See "Cloud escalation" below. |
+| `learned/` | Widgets Claude built, one `<name>.json` each. `tools.py` re-reads the folder on every call. |
+| `test_escalate.py` | Tests for `escalate.py` and the learned-widget round trip (mock Messages API, no network). |
 | `test_client.py` | Fake canvas for end-to-end tests |
 | `voice_client.py` | Fake desktop orb for the voice mode: timings, saved audio, interrupt test |
 | `see_client.py` | Fake desktop orb for "eyes on request": sends a `see` frame (JPEG + question), checks the spoken answer and the bad-frame errors |
@@ -105,7 +140,7 @@ Measured 2026-11-07 (M2 8 GB, warm server, text input):
 | "Make it for six, and start a ten-minute timer." | `update recipe` + `create timer` + say | 3.4 s |
 | *(voice)* "Add parmesan to the ingredients." | `create ingredients` + say | 7.3 s ⚠️ |
 | timer_done event | say "Pasta's done." | instant |
-| "Plan my macros … and chart it." | `pending` → orb working → `create` (stub) + say | 3.5 s + stub |
+| "Plan my macros … and chart it." | `pending` → orb working → `create` (stub) + say | 3.5 s + stub (measured before the real cloud call) |
 | "I'm done." | `clear` + say "The canvas is cleared." | 2.3 s |
 
 ## Known issues / decisions made
