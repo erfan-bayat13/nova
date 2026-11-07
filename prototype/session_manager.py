@@ -260,6 +260,10 @@ class SessionManager:
     def _done_history(self):
         return [h for h in self.history if h["text"] and not h.get("pending")]
 
+    def recent_dialogue(self, n: int = 6) -> list[tuple[str, str]]:
+        """The last n finished user/assistant lines as (role, text), oldest first."""
+        return [(h["role"], h["text"]) for h in self._done_history() if h["role"] in ("user", "assistant")][-n:]
+
     @property
     def summary(self) -> str:
         return " ".join(self.facts)

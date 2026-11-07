@@ -47,6 +47,7 @@ async def main(lines: list[str], settle: float = 25):
                     t = j["type"]
                     if t == "speech_end":
                         said = j.get("text", "")
+                        print(f"   [{time.time() - t00:5.1f}s] nova says: {said!r} ({len(said.split())} words)")
                     if t in ("create", "update", "remove", "clear", "pending"):
                         print(f"   [{time.time() - t00:5.1f}s] canvas {t} {j.get('id', '')} {j.get('widget', '')} "
                               f"{json.dumps(j.get('props', ''))[:80]}")
@@ -71,7 +72,7 @@ async def main(lines: list[str], settle: float = 25):
                     await asyncio.sleep(0.1)
                 await asyncio.sleep(0.2)
                 await ws.send(json.dumps({"type": "orb_up"}))
-                print("   nova:", repr(await pump(settle)))
+                await pump(settle)
     print("final canvas:", list(canvas))
 
 

@@ -66,8 +66,9 @@ Widgets you can create:
 {widgets}"""
 
 
-VOICE_SYSTEM = """You are Nova, a warm, casual friend the user talks to by voice on their computer. Everything you say is spoken aloud.
-Answer naturally, like a friend on a call: usually one to three short sentences. Go longer only if they ask for detail, and never more than about 80 words.
+VOICE_SYSTEM = """You are Nova, a warm, upbeat friend and assistant the user talks to by voice on their computer. Everything you say is spoken aloud.
+Be vocal and engaged, like a real assistant who enjoys the conversation: react to what they say, add a quick helpful thought or a fun detail, and usually end with one friendly follow-up question that moves things forward. Two to four sentences (about 25 to 60 words) is normal; never more than 80 words.
+When they bring up a plan, a trip or a project, talk it through with them first: ask about the details that matter (when, where, how many, what they like) and share ideas. Don't dump long lists out loud.
 No markdown, lists, emojis, sound effects or stage directions. Say numbers and units the way people speak them.
 If you didn't hear or understand something, say so and ask them to repeat instead of guessing.
 
@@ -99,27 +100,32 @@ User: No.
 You: No problem, I won't look.
 
 You can also build things on a canvas that floats on their screen: recipes, checklists, timers, lists, notes, numbers, tables, charts, plans. A note in parentheses starting "(On the canvas now" lists what is already there; never read it out loud.
-When they ask you to make, show, start, track, plan, add, change or remove something on the canvas, or they say what they are doing and a canvas would help (cooking, a timer, a list), reply with exactly this line and nothing else: "Okay, putting that on the canvas." When they say they are done or ask you to clear it, reply with exactly: "Okay, clearing the canvas." For plain questions and chat, just answer. Examples:
+When they ask you to make, show, start, track, plan, add, change or remove something on the canvas, or they say what they are doing and a canvas would help (cooking, a timer, a list, a trip plan once you know the details), start with exactly this sentence: "Okay, putting that on the canvas." Then add one or two friendly sentences: a quick thought or a question. When they say they are done or ask you to clear it, start with exactly: "Okay, clearing the canvas." and say a warm goodbye. For plain questions and chat, just answer, and keep the conversation going. A trip, project or idea they have only just mentioned, with no details yet, is a conversation, not a canvas request: talk it through and ask your questions first, with no canvas line. Examples:
 User: I'm cooking pasta for four.
-You: Okay, putting that on the canvas.
+You: Okay, putting that on the canvas. Pasta night, nice! Are you doing a homemade sauce or keeping it easy?
 User: Start a ten minute timer.
-You: Okay, putting that on the canvas.
+You: Okay, putting that on the canvas. Ten minutes, I'll keep it ticking.
 User: Make it for six.
-You: Okay, putting that on the canvas.
-User: Make me a packing list for a beach trip.
-You: Okay, putting that on the canvas.
+You: Okay, putting that on the canvas. A bigger crowd, even better!
+User: I want to book a trip to Spain.
+You: Ooh, Spain, I love that! When are you thinking of going, and are you more into beaches, or cities and food?
+User: I'm thinking of redoing my living room.
+You: Ooh, fun project! What style are you drawn to, and is it more a fresh coat of paint or a full makeover?
+User: Probably June for ten days, mostly cities and food.
+You: Okay, putting that on the canvas. Madrid, Barcelona and Seville make a great mix for ten days. Do you want mostly trains between them, or a couple of short flights?
 User: I'm done, thanks.
-You: Okay, clearing the canvas.
+You: Okay, clearing the canvas. Anytime, that was fun!
 User: How long does pasta take to cook?
-You: About ten minutes for most pasta, until it's tender but still has a bite.
+You: About ten minutes for most pasta, until it's tender but still has a bite. Do you like it with a little bite or softer?
 User: What's a good name for a cat?
-You: How about Mochi or Luna?"""
+You: How about Mochi or Luna? Are you getting a kitten, or adopting an older one?"""
 # After a voice reply: this spoken line (taught in VOICE_SYSTEM) means "build it". The builder (Connection.build) then
 # turns the user's last request into canvas tool calls on the chat endpoint, while Nova has already answered.
 BUILD_NOW_RE = re.compile(r"\b(putting|adding|setting up|updating|changing|clearing|removing)\b[^.?!]*\bcanvas\b", re.I)
 # "I'm done" and friends clear the canvas without asking the model: it is the one request that must never be missed
 # (the 2B sometimes answers it with prose) and the words are unambiguous. Everything else goes to the builder.
 CLEAR_RE = re.compile(r"\b(i'?m|i am|we'?re|we are|all)\s+(all\s+)?(done|finished)\b|\bclear (it|that|this|everything|the (canvas|screen))\b|\bthat'?s (all|everything)\b|\bstart over\b", re.I)
+COMMENT_AFTER_BUILD = os.environ.get("NOVA_BUILD_COMMENT", "1") == "1"  # Nova remarks on what she built, in her own voice
 BUILD_STEPS = 3     # model calls per build: a follow-up only happens when a tool call failed, so the model can fix it
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
@@ -482,9 +488,11 @@ class Connection:
                     return
                 types = self.widgets or tools_mod.all_widget_types()
                 tools = builder.tool_list(types)
-                msgs = builder.messages(request, compact_canvas(self.canvas, "On the canvas now, for reference only, never read this out"), types)
+                convo = builder.conversation_note(self.sm.recent_dialogue(8), request)
+                msgs = builder.messages(request, compact_canvas(self.canvas, "On the canvas now, for reference only, never read this out"),
+                                        types, convo)
                 steps = made = 0
-                nudged = False
+                nudged, built = False, []
                 before = json.loads(json.dumps(self.canvas))  # to compare with after the model's updates (servings_fix)
                 while steps < BUILD_STEPS:
                     steps += 1
@@ -511,6 +519,9 @@ class Connection:
                             out, result = to_canvas(name, args, self.canvas)
                             for msg in out:
                                 await self.send(msg)
+                                if msg.get("type") == "create":
+                                    p = msg.get("props") or {}
+                                    built.append(f"a {msg.get('widget', 'widget').replace('_', ' ')} ({str(p.get('title') or p.get('label') or p.get('caption') or msg.get('id'))[:40]})")
                             made += bool(out)
                         log(f"  build {name}({json.dumps(args, ensure_ascii=False)[:110]}) -> {result}")
                         msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": json.dumps(result)})
@@ -528,6 +539,8 @@ class Connection:
                         await self.send(msg)
                     made += bool(out)
                     log(f"  build fix {name}({json.dumps(args, ensure_ascii=False)[:100]}) -> {result}")
+                if built and COMMENT_AFTER_BUILD and not self.listening:  # same proven announce format as "timer is done"
+                    await self.say(f"{built[0].split(' (')[0]} is up on their screen now, with everything you talked about.")
                 log(f"build {request[:50]!r}: {made} canvas changes in {steps} steps, asr {t_asr:.1f}s, total {time.time() - t0:.1f}s")
             except Exception as e:
                 log(f"build failed: {type(e).__name__}: {e}")

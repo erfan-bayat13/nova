@@ -22,7 +22,8 @@ SYSTEM = """You are the hands of a voice assistant. The user just asked for some
 - When the user changes servings or amounts, set the new `servings` and the new title AND rescale every ingredient quantity to match (never resend the old numbers).
 - remove_widget for one thing, clear_canvas when they are done.
 - Only call escalate for big jobs (multi-day plans, computed charts, research, a kind of widget you don't have). Never for simple requests.
-- If the request needs nothing on the canvas, call no tools.
+- The assistant has already told the user you are putting it on the canvas, so always put something useful there. For a trip or project they have only just mentioned, make a short starter checklist (the next steps, e.g. flights, hotel, things to see) titled after it.
+- If the request is only a question with no use for the canvas, call no tools.
 Widgets you can create:
 {widgets}"""
 
@@ -133,8 +134,22 @@ def tool_list(types: list[str]) -> list[dict]:
             for t in tools.tool_defs(types) if t["name"] != "say"]
 
 
-def messages(request: str, canvas_note: str, types: list[str]) -> list[dict]:
-    """System prompt + worked examples + the request (with what is on the canvas now, if anything)."""
-    user = digits(request) + (f"\n\n{canvas_note}" if canvas_note else "")
+def conversation_note(dialogue: list[tuple[str, str]], request: str, max_chars: int = 220) -> str:
+    """The last few lines of the chat, so a request like "June, ten days, cities and food" still knows it is about Spain.
+    Nova's canvas lines are dropped and the current request (the last user line) is left out."""
+    lines = list(dialogue)
+    if lines and lines[-1][0] == "user":
+        lines.pop()
+    out = []
+    for role, text in lines[-4:]:
+        text = re.sub(r"Okay, (putting that on|clearing) the canvas\.?\s*", "", text).strip()
+        if text:
+            out.append(f"{'User' if role == 'user' else 'Nova'}: {text[:max_chars]}")
+    return ("(Earlier in this conversation, only for context, already handled: " + " | ".join(out) + ")") if out else ""
+
+
+def messages(request: str, canvas_note: str, types: list[str], convo_note: str = "") -> list[dict]:
+    """System prompt + worked examples + the request (with the chat so far and what is on the canvas, if anything)."""
+    user = digits(request) + (f"\n\n{convo_note}" if convo_note else "") + (f"\n\n{canvas_note}" if canvas_note else "")
     return ([{"role": "system", "content": SYSTEM.format(widgets=tools.widget_docs_text(types))}]
             + FEWSHOT + [{"role": "user", "content": user}])

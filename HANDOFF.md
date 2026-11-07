@@ -31,6 +31,13 @@ once (the orb heard it, Nova answered, a build started).
 - **llama-server hang: fixed and verified.** It hung once when the builder ran its own ASR at the same time as the session's after-reply ASR (two audio
   requests at once: both slots busy, ~0 % CPU). The builder now waits for the session's own transcript (`sm.last_user_text()`). After a restart the full
   spoken suite ran clean. Rules that remain: one orchestrator only, never two audio chat requests at once.
+- **Talkative Nova (added last):** `VOICE_SYSTEM` now asks for a warmer, more vocal friend (2–4 sentences, a follow-up question, talk plans through first). The canvas line
+  is the FIRST sentence and she keeps chatting after it (`BUILD_NOW_RE` matches anywhere in the reply). The builder gets the last few chat lines
+  (`builder.conversation_note`) so "June, ten days, cities and food" still knows it is about Spain, always puts a starter widget up (a bare "I want to book a trip to
+  Spain" makes a starter checklist), and when it is done Nova says one short line through `Connection.say` (`NOVA_BUILD_COMMENT=0` turns that off).
+  Known: she sometimes says the canvas line for a bare idea (harmless now, the builder puts a starter widget up); a long prompt (~800 words) dilutes the examples.
+  Tested: builder alone on a Spain conversation (starter list, then plan, packing list). The full spoken flow was verified before the final tweaks; the last
+  runs were disturbed by a second client (an `Orb.app` copy of the desktop app launched from another session attached to the orchestrator and took llama's second slot).
 - **Verified by voice:** `python3 backend/creator_client.py` (orb app quit, one orchestrator) speaks pasta → "make it for six" → timer → chat → "I'm done" through
   the real voice path (real ASR, real builder). Recipe + ingredients appear, six rescales them (`builder.servings_fix`, because the 2B often resends the old
   numbers), the timer starts, chat builds nothing, "I'm done" clears (`CLEAR_RE`, no model call).
