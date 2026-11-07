@@ -6,6 +6,8 @@
 //
 // `say` (canvas mode, and the fallback when a reply has no audio) still uses the browser's voice.
 
+import { mark } from './timing';
+
 const muted = new URLSearchParams(location.search).has('mute');
 const RATE = 24000;
 const LEAD = 0.06; // seconds of headroom before the first chunk, so small network jitter doesn't click
@@ -52,12 +54,16 @@ function finishIfDone() {
   if (ended && live.size === 0) setSpeakingRef?.(false);
 }
 
+let firstChunk = true; // timing: log the first chunk of each reply once
+
 export function speechStart(setSpeaking: SetSpeaking) {
   clearTimeout(fallback);
   if ('speechSynthesis' in window) speechSynthesis.cancel();
   setSpeakingRef = setSpeaking;
   accepting = true;
   ended = false;
+  firstChunk = true;
+  mark('speech_start received');
 }
 
 export function speechChunk(buf: ArrayBuffer) {
@@ -72,6 +78,10 @@ export function speechChunk(buf: ArrayBuffer) {
   src.buffer = b;
   src.connect(analyser!);
   const at = Math.max(nextAt, ac.currentTime + LEAD);
+  if (firstChunk) {
+    firstChunk = false;
+    mark(`first audio chunk arrived, scheduled ${((at - ac.currentTime) * 1000).toFixed(0)} ms ahead (ctx ${ac.state})`);
+  }
   src.start(at);
   nextAt = at + b.duration;
   live.add(src);

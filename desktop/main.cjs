@@ -158,7 +158,10 @@ function startPushToTalk() {
     console.warn('hold-to-talk needs Accessibility permission (System Settings → Privacy & Security → Accessibility), then restart');
   }
   let down = false;
-  const send = (kind) => win?.webContents.send('ptt', kind);
+  const send = (kind) => {
+    console.log(`[ptt] ${kind} ${new Date().toISOString()} window ${win ? 'ok' : 'none'}`);
+    win?.webContents.send('ptt', kind);
+  };
   uIOhook.on('keydown', (e) => {
     if (e.keycode === key) {
       if (down) return;
@@ -195,3 +198,5 @@ app.on('will-quit', () => {
   if (backend) backend.kill('SIGINT');
 });
 app.on('window-all-closed', () => app.quit());
+      console.log(`[ptt] other key ${e.keycode} pressed while holding`);
+    else if (e.keycode === key) console.log('[ptt] keyup ignored (not down)');

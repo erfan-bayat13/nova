@@ -12,6 +12,7 @@ import { useConversation } from './conversation';
 import { startMic, type Mic } from './mic';
 import { Orb, type OrbVisual } from './Orb';
 import { speechLevel, unlockAudio } from './voice';
+import { mark, turnStart } from './timing';
 
 const q = new URLSearchParams(location.search);
 const WS_URL = q.get('ws') ?? `ws://${location.hostname || 'localhost'}:8766/canvas`;
@@ -63,10 +64,12 @@ export function OrbApp() {
       mic.current = m;
       micLevel.current = m?.level ?? null;
       micOpening.current = null;
+    const opened = performance.now();
       return m;
     });
     return micOpening.current;
   };
+      console.log(`[timing] mic opened after ${(performance.now() - opened).toFixed(0)} ms (cold start)`);
 
   const press = useCallback(() => {
     if (heldRef.current) return;
@@ -135,6 +138,8 @@ export function OrbApp() {
       e.preventDefault();
       if (HANDSFREE) api.current.toggle(); else api.current.press();
     };
+    turnStart();
+    mark(`press (mic ${mic.current ? 'warm' : 'closed'})`);
     const ku = (e: KeyboardEvent) => { if (e.code === 'Space' && !HANDSFREE) api.current.release(); };
     addEventListener('keydown', kd); addEventListener('keyup', ku);
     return () => { removeEventListener('keydown', kd); removeEventListener('keyup', ku); };
@@ -143,6 +148,8 @@ export function OrbApp() {
   // ---------------- look
   let visual: OrbVisual;
   if (HANDSFREE) {
+    turnStart();
+    mark('release');
     visual = convo.phase === 'waiting' || convo.phase === 'talking' ? 'listening'
       : convo.phase === 'replying' ? (c.orb === 'speaking' ? 'speaking' : 'thinking') : 'idle';
   } else {
