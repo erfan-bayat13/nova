@@ -17,6 +17,7 @@ type Props = {
   onDrag?: { start: () => void; by: (dx: number, dy: number) => void };
   onMenu?: () => void;
   present?: boolean; // false: the orb shrinks away (desktop orb between conversations)
+  seeing?: boolean; // a frame is being captured for "eyes on request": a thin ring around the orb
 };
 
 const DRAG_PX = 6;
@@ -35,7 +36,7 @@ export function Orb(p: Props) {
   useEffect(() => {
     const canvas = cv.current!;
     const ctx = canvas.getContext('2d')!;
-    const o = { appear: 0, cool: 0, level: 0, lt: 0, ltT: 0, env: 0, act: 0, spin: 0, t: 0, dim: 0 };
+    const o = { appear: 0, cool: 0, level: 0, lt: 0, ltT: 0, env: 0, act: 0, spin: 0, t: 0, dim: 0, see: 0 };
     let raf = 0, last = performance.now(), W = 0, H = 0;
 
     const resize = () => {
@@ -59,6 +60,7 @@ export function Orb(p: Props) {
       o.appear += ((live.current.present === false ? 0 : 1) - o.appear) * Math.min(1, dt * 9);
       o.cool += ((state === 'working' && tintWork ? 1 : 0) - o.cool) * Math.min(1, dt * 2);
       o.dim += ((connected ? 0 : 1) - o.dim) * Math.min(1, dt * 3);
+      o.see += ((live.current.seeing ? 1 : 0) - o.see) * Math.min(1, dt * 10);
       if (state === 'listening') {
         const mic = micLevel.current;
         if (mic) o.lt = mic();
@@ -126,7 +128,7 @@ export function Orb(p: Props) {
   );
 }
 
-type O = { appear: number; cool: number; level: number; env: number; act: number; spin: number; t: number; dim: number };
+type O = { appear: number; cool: number; level: number; env: number; act: number; spin: number; t: number; dim: number; see: number };
 
 function draw(ctx: CanvasRenderingContext2D, W: number, H: number, P: { x: number; y: number; r: number }, o: O) {
   ctx.clearRect(0, 0, W, H);
@@ -180,5 +182,10 @@ function draw(ctx: CanvasRenderingContext2D, W: number, H: number, P: { x: numbe
 
   ctx.strokeStyle = 'rgba(255,255,255,.16)'; ctx.lineWidth = 0.75;
   ctx.beginPath(); ctx.arc(x, y, r - 0.4, 0, 7); ctx.stroke();
+  if (o.see > 0.01) { // capturing a frame: a pulsing ring just outside the sphere
+    ctx.strokeStyle = `rgba(255,255,255,${(o.see * (0.5 + 0.35 * Math.sin(o.t * 6))).toFixed(3)})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, r * 1.22, 0, 7); ctx.stroke();
+  }
   ctx.globalAlpha = 1;
 }

@@ -36,6 +36,7 @@ isn't running, but starting it yourself first is quicker to debug. macOS asks fo
 | Hold the orb, or Space when it's focused | Same as Right ⌥. |
 | **⌥Space** | Fallback: press to talk, press again to send. |
 | ⌥ + another key | Cancelled. That was a shortcut or a special character, not a question. |
+| **⌥⇧C** / **⌥⇧S**, or the menu-bar / orb menu | Nova looks: one frame from the camera / of the screen under the cursor, sent once and dropped. A ring shows while it's captured. Holding the orb cancels a capture that hasn't gone yet. |
 | Drag the orb | Moves it. |
 | Right-click the orb, or the menu-bar dot | Reload, DevTools, Quit. There's no Dock icon. |
 

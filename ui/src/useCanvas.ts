@@ -118,9 +118,11 @@ export function useCanvas(url: string, mode: Mode = 'canvas') {
   const sendAudio = useCallback((frame: ArrayBuffer) => {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(frame);
   }, []);
+  // one still frame for "eyes on request" (ui/src/look.ts); sent once, never kept
+  const see = useCallback((source: 'camera' | 'screen', image: string) => send({ type: 'see', source, image }), [send]);
   const emit = useCallback((id: string, name: string, data?: unknown) => send({ type: 'event', id, name, data }), [send]);
   const localUpdate = useCallback((id: string, props: Props) => dispatch({ type: 'local', id, props }), []);
   const gone = useCallback((id: string) => dispatch({ type: 'gone', id }), []);
 
-  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, orbCancel, sendAudio, emit, localUpdate, gone };
+  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, orbCancel, sendAudio, see, emit, localUpdate, gone };
 }

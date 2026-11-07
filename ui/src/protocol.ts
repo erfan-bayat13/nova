@@ -21,5 +21,6 @@ export type ClientMsg =
   | { type: 'orb_down' }
   | { type: 'orb_cancel' }
   | { type: 'orb_up' }
+  | { type: 'see'; source: 'camera' | 'screen'; image: string; question?: string }
   | { type: 'event'; id: string; name: string; data?: unknown }
   | { type: 'canvas_state'; widgets: { id: string; widget: string; props: Props }[] };

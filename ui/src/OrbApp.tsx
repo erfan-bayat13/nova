@@ -13,6 +13,7 @@ import { startMic, type Mic } from './mic';
 import { Orb, type OrbVisual } from './Orb';
 import { speechLevel, unlockAudio } from './voice';
 import { mark, turnStart } from './timing';
+import { grabCamera, type Source } from './look';
 
 const q = new URLSearchParams(location.search);
 const WS_URL = q.get('ws') ?? `ws://${location.hostname || 'localhost'}:8766/canvas`;
@@ -29,6 +30,9 @@ type Shell = {
   hide: () => void;
   onHotkey: (fn: () => void) => void;
   onPtt: (fn: (kind: 'down' | 'up' | 'cancel') => void) => void;
+  onLook: (fn: (source: Source) => void) => void;
+  mediaAccess: (kind: Source) => Promise<string>; // systemPreferences.getMediaAccessStatus, 'granted' when allowed
+  captureScreen: () => Promise<{ image: string } | { error: string }>;
 };
 const shell = (window as unknown as { orbShell?: Shell }).orbShell;
 
@@ -60,18 +64,73 @@ export function OrbApp() {
   // ---------------- push to talk
   const openMic = () => {
     if (mic.current) return Promise.resolve(mic.current);
+    const opened = performance.now();
     micOpening.current ??= startMic().then((m) => {
       mic.current = m;
       micLevel.current = m?.level ?? null;
       micOpening.current = null;
-    const opened = performance.now();
+      console.log(`[timing] mic opened after ${(performance.now() - opened).toFixed(0)} ms (cold start)`);
       return m;
     });
     return micOpening.current;
   };
-      console.log(`[timing] mic opened after ${(performance.now() - opened).toFixed(0)} ms (cold start)`);
+
+  // ---------------- eyes on request: one frame from the camera or the screen (ui/src/look.ts)
+  const [seeing, setSeeing] = useState<Source | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const lookId = useRef(0); // bumps on every new look and every cancel, so a stale capture is dropped
+  const noteTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const flash = (msg: string) => {
+    setNote(msg);
+    clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(() => setNote(null), 4000);
+  };
+
+  // holding the orb (or Space, or the PTT key) cancels a capture that hasn't been sent yet
+  const stopLook = useCallback(() => {
+    lookId.current++;
+    setSeeing(null);
+  }, []);
+
+  const look = useCallback(async (source: Source) => {
+    if (heldRef.current) return;
+    if (!c.connected) return flash('Not connected');
+    const id = ++lookId.current;
+    const alive = () => lookId.current === id;
+    setShown(true);
+    setSeeing(source);
+    const fail = (msg: string) => { if (alive()) { setSeeing(null); flash(msg); } };
+    try {
+      let image: string | null = null;
+      if (source === 'camera') {
+        if (shell && (await shell.mediaAccess('camera')) !== 'granted') return fail('Camera access off');
+        if (!alive()) return;
+        image = await grabCamera(alive);
+      } else {
+        if (!shell) return fail('Screen needs the desktop app');
+        if ((await shell.mediaAccess('screen')) !== 'granted') {
+          if (alive()) console.warn('[look] Screen Recording is off: System Settings → Privacy & Security → Screen & System Audio Recording');
+          return fail('Screen access off');
+        }
+        if (!alive()) return;
+        const r = await shell.captureScreen();
+        if (!alive()) return;
+        if ('error' in r) return fail('Screen capture failed');
+        image = r.image;
+      }
+      if (!alive()) return;
+      if (!image) return fail('Capture failed');
+      c.see(source, image); // the frame goes out once, then nothing is kept
+      setSeeing(null);
+    } catch (e) {
+      console.warn('[look]', e);
+      fail(source === 'camera' ? ((e as Error).name === 'NotAllowedError' ? 'Camera access off' : 'Camera failed') : 'Screen failed');
+    }
+  }, [c]);
 
   const press = useCallback(() => {
+    stopLook();
     if (heldRef.current) return;
     heldRef.current = true;
     setHeld(true);
@@ -79,14 +138,18 @@ export function OrbApp() {
     clearTimeout(timers.current.hide);
     clearTimeout(timers.current.mic);
     unlockAudio();
+    turnStart();
+    mark(`press (mic ${mic.current ? 'warm' : 'closed'})`);
     c.orbDown(); // also stops a reply that is playing (barge-in)
     void openMic().then((m) => { if (m && heldRef.current) m.start(c.sendAudio); });
-  }, [c]);
+  }, [c, stopLook]);
 
   const release = useCallback(() => {
     if (!heldRef.current) return;
     heldRef.current = false;
     setHeld(false);
+    turnStart();
+    mark('release');
     mic.current?.stop(); // flushes the last partial frame before orb_up
     c.orbUp();
   }, [c]);
@@ -100,7 +163,7 @@ export function OrbApp() {
   }, [c]);
 
   // after the reply: linger, fade, hide; release the mic a bit later
-  const idle = !held && c.orb === 'idle';
+  const idle = !held && !seeing && c.orb === 'idle';
   useEffect(() => {
     if (HANDSFREE || !idle || !shown) return;
     const t = timers.current;
@@ -118,8 +181,8 @@ export function OrbApp() {
   }, [idle, shown]);
 
   // ---------------- inputs
-  const api = useRef({ press, release, cancel, toggle: convo.toggle });
-  api.current = { press, release, cancel, toggle: convo.toggle };
+  const api = useRef({ press, release, cancel, toggle: convo.toggle, look });
+  api.current = { press, release, cancel, toggle: convo.toggle, look };
   useEffect(() => {
     shell?.onPtt((kind) => {
       if (HANDSFREE) return;
@@ -127,6 +190,7 @@ export function OrbApp() {
       else if (kind === 'up') api.current.release();
       else api.current.cancel();
     });
+    shell?.onLook((source) => { void api.current.look(source); }); // shortcut or menu: ⌥⇧S / ⌥⇧C
     shell?.onHotkey(() => {
       if (HANDSFREE) api.current.toggle();
       else if (heldRef.current) api.current.release();
@@ -138,8 +202,6 @@ export function OrbApp() {
       e.preventDefault();
       if (HANDSFREE) api.current.toggle(); else api.current.press();
     };
-    turnStart();
-    mark(`press (mic ${mic.current ? 'warm' : 'closed'})`);
     const ku = (e: KeyboardEvent) => { if (e.code === 'Space' && !HANDSFREE) api.current.release(); };
     addEventListener('keydown', kd); addEventListener('keyup', ku);
     return () => { removeEventListener('keydown', kd); removeEventListener('keyup', ku); };
@@ -148,8 +210,6 @@ export function OrbApp() {
   // ---------------- look
   let visual: OrbVisual;
   if (HANDSFREE) {
-    turnStart();
-    mark('release');
     visual = convo.phase === 'waiting' || convo.phase === 'talking' ? 'listening'
       : convo.phase === 'replying' ? (c.orb === 'speaking' ? 'speaking' : 'thinking') : 'idle';
   } else {
@@ -160,11 +220,12 @@ export function OrbApp() {
 
   return (
     <div className="stage" ref={stage}>
-      <Orb spot={spot} state={visual} connected={c.connected} tintWork={false} present={present}
+      <Orb spot={spot} state={visual} connected={c.connected} tintWork={false} present={present} seeing={seeing !== null}
         micLevel={HANDSFREE ? convo.micLevel : micLevel} speechLevel={speechLevel}
         onDown={HANDSFREE ? convo.tap : press} onUp={HANDSFREE ? () => {} : release}
         onDrag={shell ? { start: HANDSFREE ? () => {} : cancel, by: shell.moveBy } : undefined}
         onMenu={shell?.menu} />
+      {note && <div className="orb-note" style={{ top: spot.y + spot.r + 8 }}>{note}</div>}
     </div>
   );
 }

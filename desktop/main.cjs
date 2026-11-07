@@ -8,9 +8,10 @@
 //   npm run dev    load the orb from the Vite dev server instead (cd ui && npm run dev)
 //
 // Env: ORCH_PORT (8766), ORB_PTT_KEY (hold-to-talk key, a uiohook key name: AltRight), ORB_HOTKEY (Alt+Space),
+//      ORB_CAMERA_HOTKEY (Alt+Shift+C), ORB_SCREEN_HOTKEY (Alt+Shift+S): "eyes on request", one frame to the model.
 //      ORB_URL (load the page from here, e.g. http://localhost:5173/?handsfree), ORB_PYTHON (python3)
 
-const { app, BrowserWindow, globalShortcut, ipcMain, Menu, nativeImage, screen, session, systemPreferences, Tray } = require('electron');
+const { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, screen, session, systemPreferences, Tray } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -20,8 +21,12 @@ const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.ORCH_PORT || 8766);
 const HOTKEY = process.env.ORB_HOTKEY || 'Alt+Space';
 const PTT_KEY = process.env.ORB_PTT_KEY || 'AltRight';
+const CAMERA_HOTKEY = process.env.ORB_CAMERA_HOTKEY || 'Alt+Shift+C';
+const SCREEN_HOTKEY = process.env.ORB_SCREEN_HOTKEY || 'Alt+Shift+S';
 const SIZE = 120;   // window edge in points; the orb is 0.2 × this in radius (24), the rest is room for its glow
 const MARGIN = 24;
+const MAX_SIDE = 1024;                  // "eyes on request": longest side of a frame, in pixels
+const MAX_B64 = 1.5 * 1024 * 1024;      // and the base64 JPEG stays under 1.5 MB
 
 let win = null;
 let backend = null; // the orchestrator, only if we started it
@@ -65,6 +70,7 @@ function createWindow() {
   });
   win.setAlwaysOnTop(true, 'floating');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  win.setContentProtection(true); // the orb is left out of screen captures, so "look at screen" doesn't see itself
 
   const ws = `ws://localhost:${PORT}/canvas`;
   if (process.env.ORB_URL) {
@@ -79,7 +85,8 @@ function createWindow() {
 }
 
 const pttLabel = () => PTT_KEY.replace('AltRight', 'right ⌥').replace('MetaRight', 'right ⌘').replace('CtrlRight', 'right ⌃');
-const hotkeyLabel = () => HOTKEY.replace('Alt', '⌥').replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace(/\+/g, '');
+const keyLabel = (k) => k.replace('Alt', '⌥').replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace(/\+/g, '');
+const hotkeyLabel = () => keyLabel(HOTKEY);
 
 // the hotkey (or the menu): show the orb if hidden, and let the page start or end the conversation
 function talk() {
@@ -88,10 +95,58 @@ function talk() {
   win.webContents.send('hotkey');
 }
 
+// the shortcut or menu: show the orb if hidden, and let the page take one frame and send it
+function look(source) {
+  if (!win) return;
+  if (!win.isVisible()) win.showInactive();
+  win.webContents.send('look', source);
+}
+
+const lookItems = () => [
+  { label: `Look through camera  ${keyLabel(CAMERA_HOTKEY)}`, click: () => look('camera') },
+  { label: `Look at screen  ${keyLabel(SCREEN_HOTKEY)}`, click: () => look('screen') },
+];
+
+// camera and screen access (macOS). Asks once for the camera; the screen can only be allowed in Settings.
+async function mediaAccess(kind) {
+  if (process.platform !== 'darwin') return 'granted';
+  if (kind !== 'camera' && kind !== 'screen') return 'denied';
+  if (kind === 'camera' && systemPreferences.getMediaAccessStatus('camera') === 'not-determined') {
+    await systemPreferences.askForMediaAccess('camera');
+  }
+  return systemPreferences.getMediaAccessStatus(kind);
+}
+
+// one still of the screen the cursor is on, as base64 JPEG. Kept in memory only; the caller sends it and drops it.
+async function captureScreen() {
+  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') return { error: 'denied' };
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const k = MAX_SIDE / Math.max(display.size.width, display.size.height);
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: Math.round(display.size.width * k), height: Math.round(display.size.height * k) },
+  });
+  const src = sources.find((s) => s.display_id === String(display.id)) ?? sources[0];
+  if (!src || src.thumbnail.isEmpty()) return { error: 'empty' };
+  let img = src.thumbnail;
+  const { width, height } = img.getSize();
+  if (Math.max(width, height) > MAX_SIDE) {
+    const j = MAX_SIDE / Math.max(width, height);
+    img = img.resize({ width: Math.round(width * j), height: Math.round(height * j), quality: 'good' });
+  }
+  let image = '';
+  for (const q of [70, 50, 35]) {
+    image = img.toJPEG(q).toString('base64');
+    if (image.length <= MAX_B64) break;
+  }
+  return { image };
+}
+
 function menuItems() {
   return [
     { label: `Hold ${pttLabel()} to talk`, enabled: false },
     { label: `Talk  ${hotkeyLabel()}`, click: talk },
+    ...lookItems(),
     { type: 'separator' },
     { label: 'Reload', click: () => win?.reload() },
     { label: 'Open DevTools', click: () => win?.webContents.openDevTools({ mode: 'detach' }) },
@@ -104,6 +159,8 @@ function showMenu() {
   if (!win) return;
   Menu.buildFromTemplate([
     { label: `Hold ${pttLabel()} (or the orb) to talk`, enabled: false },
+    { type: 'separator' },
+    ...lookItems(),
     { type: 'separator' },
     { label: 'Reload', click: () => win.reload() },
     { label: 'Open DevTools', click: () => win.webContents.openDevTools({ mode: 'detach' }) },
@@ -127,6 +184,8 @@ app.whenReady().then(async () => {
   });
   ipcMain.on('menu', showMenu);
   ipcMain.on('hide', () => win?.hide());
+  ipcMain.handle('media-access', (_e, kind) => mediaAccess(kind));
+  ipcMain.handle('capture-screen', () => captureScreen());
 
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'trayTemplate.png')));
   tray.setToolTip(`Orb: hold ${pttLabel()} to talk`);
@@ -137,6 +196,9 @@ app.whenReady().then(async () => {
 
   const ok = globalShortcut.register(HOTKEY, talk); // press: start talking; press again: send
   if (!ok) console.warn(`could not register ${HOTKEY} (taken by another app?); set ORB_HOTKEY`);
+  for (const [accel, source] of [[CAMERA_HOTKEY, 'camera'], [SCREEN_HOTKEY, 'screen']]) {
+    if (!globalShortcut.register(accel, () => look(source))) console.warn(`could not register ${accel} (taken by another app?)`);
+  }
   startPushToTalk();
 });
 
@@ -169,12 +231,14 @@ function startPushToTalk() {
       if (win && !win.isVisible()) win.showInactive();
       send('down');
     } else if (down) {
+      console.log(`[ptt] other key ${e.keycode} pressed while holding`);
       down = false;
       send('cancel');
     }
   });
   uIOhook.on('keyup', (e) => {
     if (e.keycode === key && down) { down = false; send('up'); }
+    else if (e.keycode === key) console.log('[ptt] keyup ignored (not down)');
   });
   const tryStart = () => {
     try {
@@ -198,5 +262,3 @@ app.on('will-quit', () => {
   if (backend) backend.kill('SIGINT');
 });
 app.on('window-all-closed', () => app.quit());
-      console.log(`[ptt] other key ${e.keycode} pressed while holding`);
-    else if (e.keycode === key) console.log('[ptt] keyup ignored (not down)');
