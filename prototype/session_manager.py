@@ -456,7 +456,22 @@ class SessionManager:
         r = await self._turn(send, n, modalities, entry, rotated, tool_choice, on_audio=on_audio)
         # transcribe only after the reply: running ASR at the same time on the GPU tripled the turn time
         self._bg.append(asyncio.create_task(fill()))
+        self._last_fill = (self._bg[-1], entry)
         return r
+
+    async def last_user_text(self) -> str:
+        """What the user said in the latest audio turn (the transcript we already make after every reply).
+        Waits for it, so nobody has to run a second ASR at the same time: two audio requests at once hung
+        llama-server (both slots busy, no CPU)."""
+        last = getattr(self, "_last_fill", None)
+        if not last:
+            return ""
+        task, entry = last
+        try:
+            await asyncio.wait_for(asyncio.shield(task), 30)
+        except Exception:
+            pass
+        return entry.get("text", "")
 
     # ---------------- streamed utterance (push-to-talk: audio goes in while the user is still talking)
     # Measured: release -> first reply audio 0.23-0.27 s when the audio was appended while holding, vs
@@ -524,6 +539,7 @@ class SessionManager:
                     self.facts.append(f)
         r = await self._turn(send, n, modalities, entry, self._stream_rotated, on_audio=on_audio)
         self._bg.append(asyncio.create_task(fill()))
+        self._last_fill = (self._bg[-1], entry)
         return r
 
     async def send_tool_result(self, call_id: str, output, modalities=("text",)) -> Result:

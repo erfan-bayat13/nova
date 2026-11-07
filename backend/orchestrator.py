@@ -33,7 +33,7 @@ from websockets.asyncio.server import serve
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "prototype"))  # session_manager.py lives with its tests
 
-from session_manager import SessionManager, ServerWatchdog, _post, clean, transcribe  # noqa: E402
+from session_manager import SessionManager, ServerWatchdog, _post  # noqa: E402
 from escalate import escalate  # noqa: E402
 import builder  # noqa: E402
 import tools as tools_mod  # noqa: E402
@@ -467,7 +467,7 @@ class Connection:
             t0 = time.time()
             await self.send({"type": "orb", "state": "thinking"})
             try:
-                request = (text or clean(await asyncio.to_thread(transcribe, pcm))).strip()
+                request = (text or await self.sm.last_user_text()).strip()  # the transcript the session makes anyway
                 if not request:
                     return
                 t_asr = time.time() - t0
