@@ -24,3 +24,4 @@ prototype/logs/*.mp4
 # local server / orchestrator logs
 *.log
 deck/node_modules/
+backend/data/

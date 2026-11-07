@@ -26,7 +26,7 @@ the recipe AND the ingredients in one utterance.
 """
 from __future__ import annotations
 
-import array, asyncio, base64, json, os, re, sys, time
+import array, asyncio, base64, json, os, re, sys, time, uuid
 
 from websockets.asyncio.server import serve
 
@@ -38,9 +38,13 @@ from escalate import escalate  # noqa: E402
 import builder  # noqa: E402
 import tools as tools_mod  # noqa: E402
 from tools import tool_defs, to_canvas, widget_docs_text  # noqa: E402
+from memory import Store, ConnectionMemory, inject_note  # noqa: E402  (long-term memory, docs/MEMORY.md)
+from embed import Embedder  # noqa: E402
+from consolidate import consolidate  # noqa: E402
 
 PORT = int(os.environ.get("ORCH_PORT", 8765))
 LOG = os.environ.get("ORCH_LOG", "1") == "1"
+MEMORY_ON = os.environ.get("MEMORY", "1") == "1"   # MEMORY=0 runs without long-term memory
 MAX_STEPS = 5          # tool calls per utterance
 MIN_AUDIO_S = 0.3      # ignore taps shorter than this
 MIN_VOICED_S = 0.25    # ...and utterances with less actual speech than this (the model invents content from silence)
@@ -186,6 +190,7 @@ def voiced_seconds(pcm: bytes, rate: int = 16000) -> float:
 def strip_context_echo(text: str) -> str:
     """Remove copies of the screen note the model sometimes repeats: [Canvas: ...] or (On screen now ...)."""
     text = re.sub(r"\[[^\]]*\]?", "", text)
+    text = re.sub(r"\(\s*remembered from before[^)]*\)?", "", text, flags=re.I)
     return re.sub(r"\(\s*on screen now[^)]*\)?", "", text, flags=re.I)
 
 
@@ -267,9 +272,12 @@ def parse_see(m: dict) -> tuple[bytes, str, str]:
 
 
 class Connection:
-    def __init__(self, ws, watchdog: ServerWatchdog):
+    def __init__(self, ws, watchdog: ServerWatchdog, store: Store | None = None, embedder: Embedder | None = None):
         self.ws = ws
         self.watchdog = watchdog
+        self.mem = ConnectionMemory(store, uuid.uuid4().hex[:8], embedder) if store else None
+        self.mem_lock = asyncio.Lock()
+        self._rotations_seen = 0
         self.widgets: list[str] = []
         self.canvas: dict = {}           # id -> {widget, props}; authoritative copy comes from canvas_state
         self.audio = bytearray()
@@ -297,16 +305,38 @@ class Connection:
 
     async def ensure_session(self):
         async with self.session_lock:  # hello warms up a session while the first turn may also need one
+            card = self.mem.card() if self.mem else ""
+            with_card = lambda base: f"{base}\n\n{card}" if card else base  # noqa: E731  stable prefix, same each rotation
             if self.sm is None and self.mode == "voice":
-                sm = SessionManager(VOICE_SYSTEM, watchdog=self.watchdog)
+                sm = SessionManager(with_card(VOICE_SYSTEM), watchdog=self.watchdog)
                 await sm.start()
                 self.sm = sm
             elif self.sm is None:
                 widgets = self.widgets or ["recipe", "checklist", "timer", "stacked_bar", "html"]
-                sm = SessionManager(SYSTEM.format(widgets=widget_docs_text(widgets)),
+                sm = SessionManager(with_card(SYSTEM.format(widgets=widget_docs_text(widgets))),
                                     tools=tool_defs(widgets), watchdog=self.watchdog)
                 await sm.start()
                 self.sm = sm
+
+    async def after_turn(self):
+        """Off the voice path: wait for the transcript and fact extraction, then persist them. Voice commands
+        ("remember that...", "forget...", "off the record") are applied by memory.py; a rotation or a clean
+        fact list triggers the background consolidation (a bigger model, only if ANTHROPIC_API_KEY is set)."""
+        if not (self.mem and self.sm):
+            return
+        try:
+            async with self.mem_lock:
+                await self.sm._settle()
+                for name, detail in await asyncio.to_thread(self.mem.sync, self.sm):  # embeds: keep it off the loop
+                    log(f"  memory: {name} {detail}")
+                if self.mem.next_note:
+                    log(f"  memory: next round will get {self.mem.next_note[-100:]!r}")
+            if self.sm.rotations > self._rotations_seen:
+                self._rotations_seen = self.sm.rotations
+                if await asyncio.to_thread(consolidate, self.mem.store):
+                    log(f"  memory consolidated: {self.mem.store.stats()}")
+        except Exception as e:
+            log(f"  memory sync failed: {type(e).__name__}: {e}")
 
     def spawn(self, coro):
         t = asyncio.create_task(coro)
@@ -321,6 +351,10 @@ class Connection:
             try:
                 await self.ensure_session()
                 ctx = compact_canvas(self.canvas)
+                note = self.mem.take_note(text if text and not text.startswith("[Widget event") else None) if self.mem else ""
+                if note:
+                    ctx = f"{ctx}\n{note}" if ctx else note
+                    log(f"  memory note: {note[-120:]!r}")
                 if pcm is not None:
                     r = await self.sm.send_audio(pcm, modalities=("text",), context=ctx)
                 else:
@@ -369,6 +403,7 @@ class Connection:
                 log(f"turn failed: {type(e).__name__}: {e}")
                 await self.send({"type": "say", "text": "Sorry, I lost that."})
             finally:
+                self.spawn(self.after_turn())
                 if not self.listening and not getattr(self, "_working", False):
                     await self.send({"type": "orb", "state": "idle"})
 
@@ -393,7 +428,14 @@ class Connection:
                 return
             try:
                 await self.ensure_session()
-                await self.sm.stream_start(context=compact_canvas(self.canvas, "On the canvas now"))
+                ctx = compact_canvas(self.canvas, "On the canvas now")
+                if self.mem:  # one small memory note, built after the last turn, rides in the same item as the canvas
+                    async with self.mem_lock:
+                        note = self.mem.take_note()
+                    if note:
+                        ctx = f"{ctx}\n{note}" if ctx else note
+                        log(f"  memory note: {note[-120:]!r}")
+                await self.sm.stream_start(context=ctx)
                 sent = 0
                 while sent < len(self.audio):  # what arrived while we waited
                     chunk = bytes(self.audio[sent:])
@@ -447,6 +489,11 @@ class Connection:
             await self.ensure_session()
             self.sm.reset_cancel()  # a barge-in from an earlier turn must not stop this one
             mods = ("text", "audio")
+            if self.mem and not stream:  # typed / one-shot voice / `see`: the streamed path injects at stream_start
+                note = self.mem.take_note(text)
+                if note:
+                    await inject_note(self.sm, note)
+                    log(f"  memory note: {note[-120:]!r}")
             if see is not None:
                 jpeg, source, question = see
                 r = await self.sm.see(jpeg, question, source=source, modalities=mods, on_audio=on_audio)
@@ -473,6 +520,7 @@ class Connection:
             await self.send({"type": "say", "text": "Sorry, I lost that."})
         finally:
             self.speaking = False
+            self.spawn(self.after_turn())
             if not self.listening:
                 await self.send({"type": "orb", "state": "idle"})
 
@@ -742,12 +790,28 @@ class Connection:
     async def close(self):
         for t in list(self.tasks):
             t.cancel()
+        if self.mem and self.sm:  # last chance to save this conversation, then tidy the fact list
+            try:
+                await self.sm._settle()
+                self.mem.sync(self.sm)
+                await asyncio.wait_for(asyncio.to_thread(consolidate, self.mem.store), 20)
+            except Exception as e:
+                log(f"  memory close failed: {type(e).__name__}: {e}")
         if self.sm:
             await self.sm.close()
 
 
 async def main():
     watchdog = ServerWatchdog()
+    store = Store() if MEMORY_ON else None
+    embedder = Embedder() if store else None
+    if embedder:  # picking a backend can take seconds (torch): do it in a thread while llama-server comes up
+        def warm():
+            embedder.start()
+            log(f"embedder: {embedder.name or 'none, keyword retrieval only'}")
+        asyncio.get_running_loop().run_in_executor(None, warm)
+    if store:
+        log(f"memory on: {store.stats()} ({os.path.relpath(store.db.execute('PRAGMA database_list').fetchone()[2])})")
     log("checking llama-server…")
     waited = await watchdog.ensure_up()
     log(f"llama-server up{f' (started, {waited:.0f}s)' if waited else ''}")
@@ -756,7 +820,7 @@ async def main():
         if ws.request.path != "/canvas":
             await ws.close(1008, "use /canvas")
             return
-        conn = Connection(ws, watchdog)
+        conn = Connection(ws, watchdog, store, embedder)
         try:
             async for raw in ws:
                 await conn.on_message(raw)
