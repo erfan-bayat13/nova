@@ -316,6 +316,6 @@ print(sm.stats)  # est_tokens, rotations, recoveries, server_restarts
 3. [x] Tool-call test: the model calls `create_widget` / `update_widget` / `start_timer` from the cooking demo lines, and we measure the time to the tool call.
 4. [x] Voice input: mic audio → `input_audio_buffer` → tool call, end to end.
 5. [x] Measure response times for text, audio and both. Check peak RAM.
-6. [ ] Turn detection (silence detection on the mic) + barge-in (`response.cancel` when the user talks over the reply).
+6. [x] Turn detection (silence detection on the mic) + barge-in (`response.cancel` when the user talks over the reply). Done client-side in `ui/src/conversation.ts`: llama-server ignores `turn_detection: server_vad` (reports `null`, no speech events).
 7. [ ] Speak long answers sentence by sentence (≤ 80 words per response).
 8. [ ] Linked widgets (ingredients read `servings` from the recipe).

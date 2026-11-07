@@ -5,7 +5,7 @@
 // linear interpolation, carrying the fractional position across chunks so there are no clicks.
 
 const TARGET_RATE = 16000;
-const FRAME_SAMPLES = 1600; // 100 ms at 16 kHz → 3,200-byte binary frames
+const FRAME_SAMPLES = 480; // 30 ms at 16 kHz → 960-byte binary frames (fine-grained enough for turn detection)
 
 // Tiny worklet that forwards raw mic samples to the main thread.
 const WORKLET = `
@@ -23,6 +23,7 @@ export type Mic = {
   level: () => number;                        // 0..1 loudness for the orb
   start: (sink: (frame: ArrayBuffer) => void) => void; // begin sending frames to sink
   stop: () => void;                           // flush the last partial frame, stop sending
+  close: () => void;                          // release the microphone (macOS mic indicator goes off)
 };
 
 export async function startMic(): Promise<Mic | null> {
@@ -96,6 +97,11 @@ export async function startMic(): Promise<Mic | null> {
         if (sink && n > 0) sink(out.slice(0, n).buffer);
         sink = null;
         n = 0;
+      },
+      close: () => {
+        sink = null;
+        stream.getTracks().forEach((t) => t.stop());
+        void ac.close();
       },
     };
   } catch (err) {

@@ -1,0 +1,17 @@
+{
+  "name": "orb-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Floating desktop orb: speech to speech with the local model",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "npm --prefix ../ui run build && electron .",
+    "dev": "ORB_URL=http://localhost:5173 electron ."
+  },
+  "devDependencies": {
+    "electron": "33.2.1"
+  },
+  "dependencies": {
+    "uiohook-napi": "^1.5.5"
+  }
+}

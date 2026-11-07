@@ -164,6 +164,7 @@ class Result:
     output_tokens: int = 0
     secs: float = 0.0
     first_audio_s: float | None = None
+    cancelled: bool = False             # cancel() stopped this reply early (barge-in)
     rotated: bool = False               # a new session was opened before this turn
     recovered: bool = False             # the server crashed/restarted during this turn
 
@@ -199,6 +200,9 @@ class SessionManager:
         self._awaiting_tool_result = False
         self.rotations = 0
         self.recoveries = 0
+        self._cancel = False                # set by cancel(): stop the running reply (barge-in)
+        self._stream: bytearray | None = None  # audio of the utterance being streamed in (stream_*)
+        self._stream_rotated = False
         self.est_at_crash: list[int] = []
 
     # ---------------- lifecycle
@@ -316,8 +320,13 @@ class SessionManager:
         await self._summarize()
         await self._open()
 
+    def cancel(self):
+        """Barge-in: stop the reply that is being generated. The running turn returns early with what it
+        had so far (Result.cancelled); audio deltas after this point are not passed to on_audio."""
+        self._cancel = True
+
     async def _turn(self, send_items, incoming: int, modalities, entry=None, rotated=False,
-                    tool_choice: str = "auto", respond: bool = True) -> Result:
+                    tool_choice: str = "auto", respond: bool = True, on_audio=None) -> Result:
         """Send items + response.create. On server loss: restart, reopen, resend once."""
         for attempt in (1, 2):
             try:
@@ -328,7 +337,7 @@ class SessionManager:
                 if not respond:  # e.g. filing the result of a final `say` call without asking for more
                     self._awaiting_tool_result = False
                     return Result()
-                r = await self._respond(modalities, tool_choice)
+                r = await self._respond(modalities, tool_choice, on_audio)
                 r.rotated, r.recovered = rotated, attempt == 2
                 if entry is not None:
                     entry.pop("pending", None)
@@ -340,16 +349,25 @@ class SessionManager:
                 self._log(f"lost server ({type(e).__name__}); recovering")
                 await self._recover()
 
-    async def _respond(self, modalities, tool_choice: str = "auto") -> Result:
-        """tool_choice: "auto" | "none" | "required" (the server rejects forcing a specific function)."""
+    async def _respond(self, modalities, tool_choice: str = "auto", on_audio=None) -> Result:
+        """tool_choice: "auto" | "none" | "required" (the server rejects forcing a specific function).
+        on_audio(pcm24k_chunk): called (sync or async) with every audio delta as it arrives, for streaming."""
+        self._cancel = False
         resp = {"output_modalities": list(modalities)}
         if tool_choice != "auto":
             resp["tool_choice"] = tool_choice
         await self.ws.send(json.dumps({"type": "response.create", "response": resp}))
         t0, r = time.time(), Result()
+        cancel_sent = False
         while True:
+            if self._cancel and not cancel_sent:
+                cancel_sent = r.cancelled = True
+                await self.ws.send(json.dumps({"type": "response.cancel"}))
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), 120))
             t = ev["type"]
+            if t == "error" and cancel_sent:
+                self._log(f"error while cancelling (ignored): {ev}")
+                continue
             if t == "error":
                 msg = ev.get("error", {}).get("message", str(ev))
                 if "does not fit in the context" in msg:
@@ -359,7 +377,12 @@ class SessionManager:
                 r.text += ev["delta"]
             elif t == "response.output_audio.delta":
                 r.first_audio_s = r.first_audio_s or round(time.time() - t0, 2)
-                r.pcm += base64.b64decode(ev["delta"])
+                chunk = base64.b64decode(ev["delta"])
+                r.pcm += chunk
+                if on_audio and not self._cancel:
+                    out = on_audio(chunk)
+                    if asyncio.iscoroutine(out):
+                        await out
             elif t == "response.done":
                 resp = ev.get("response", {})
                 r.output_tokens = (resp.get("usage") or {}).get("output_tokens", 0)
@@ -383,7 +406,7 @@ class SessionManager:
 
     # ---------------- public turns
     async def send_text(self, text: str, modalities=("text",), remember: bool = True, context: str = "",
-                        tool_choice: str = "auto") -> Result:
+                        tool_choice: str = "auto", on_audio=None) -> Result:
         """`context` (e.g. the current canvas state) is appended after the text, kept out of history/facts."""
         full = f"{text}\n\n{context}" if context else text
         n = await asyncio.to_thread(count_tokens, full) + ITEM_OVERHEAD
@@ -397,10 +420,10 @@ class SessionManager:
         self.history.append(entry)
         if remember:
             self._remember(text)
-        return await self._turn(send, n, modalities, entry, rotated, tool_choice)
+        return await self._turn(send, n, modalities, entry, rotated, tool_choice, on_audio=on_audio)
 
     async def send_audio(self, pcm16k: bytes, modalities=("text", "audio"), context: str = "",
-                         tool_choice: str = "auto") -> Result:
+                         tool_choice: str = "auto", on_audio=None) -> Result:
         """`context` is sent as a short text message right before the audio, in the same turn."""
         secs = len(pcm16k) / 32000
         n = int(secs * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD
@@ -424,8 +447,64 @@ class SessionManager:
                 await self.ws.send(json.dumps({"type": "input_audio_buffer.append",
                                                "audio": base64.b64encode(pcm16k[i:i + 32000]).decode()}))
             await self.ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-        r = await self._turn(send, n, modalities, entry, rotated, tool_choice)
+        r = await self._turn(send, n, modalities, entry, rotated, tool_choice, on_audio=on_audio)
         # transcribe only after the reply: running ASR at the same time on the GPU tripled the turn time
+        self._bg.append(asyncio.create_task(fill()))
+        return r
+
+    # ---------------- streamed utterance (push-to-talk: audio goes in while the user is still talking)
+    # Measured: release -> first reply audio 0.23-0.27 s when the audio was appended while holding, vs
+    # ~0.5 s when all of it is sent at release. llama-server processes appended audio as it arrives.
+    STREAM_RESERVE_S = 30  # room kept for the utterance before we know its length
+
+    async def stream_start(self, modalities=("text", "audio")):
+        """Begin an utterance. Rotates first if needed (never in the middle of one)."""
+        n = int(self.STREAM_RESERVE_S * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD
+        self._stream_rotated = await self._make_room(n, modalities)
+        self._stream = bytearray()
+
+    async def stream_append(self, pcm16k: bytes):
+        if self._stream is None:
+            return
+        self._stream += pcm16k
+        try:
+            await self.ws.send(json.dumps({"type": "input_audio_buffer.append",
+                                           "audio": base64.b64encode(pcm16k).decode()}))
+        except Exception:
+            pass  # server gone: stream_finish recovers and resends the whole utterance
+
+    async def stream_clear(self):
+        """Throw the utterance away (silence, a cancelled press)."""
+        self._stream = None
+        try:
+            await self.ws.send(json.dumps({"type": "input_audio_buffer.clear"}))
+        except Exception:
+            pass
+
+    async def stream_finish(self, modalities=("text", "audio"), on_audio=None) -> Result:
+        """The user let go: commit what was streamed and reply."""
+        pcm = bytes(self._stream or b"")
+        self._stream = None
+        n = int(len(pcm) / 32000 * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD
+        entry = {"role": "user", "text": "", "pending": True}
+        self.history.append(entry)
+        first_try = True
+
+        async def send():
+            nonlocal first_try
+            if not first_try:  # the server was restarted: the new session never got the audio
+                for i in range(0, len(pcm), 32000):
+                    await self.ws.send(json.dumps({"type": "input_audio_buffer.append",
+                                                   "audio": base64.b64encode(pcm[i:i + 32000]).decode()}))
+            first_try = False
+            await self.ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+
+        async def fill():
+            entry["text"] = clean(await asyncio.to_thread(transcribe, pcm))
+            for f in await asyncio.to_thread(extract_facts, entry["text"]):
+                if f not in self.facts:
+                    self.facts.append(f)
+        r = await self._turn(send, n, modalities, entry, self._stream_rotated, on_audio=on_audio)
         self._bg.append(asyncio.create_task(fill()))
         return r
 

@@ -3,6 +3,14 @@
     canvas (ui/) ⇄ ws://localhost:8765/canvas ⇄ this ⇄ SessionManager ⇄ llama-server /v1/realtime (LFM3-Omni-2B)
                                                  └── escalate.py (Claude, stubbed)
 
+Two modes, picked by the client's `hello` (docs/PROTOCOL.md):
+  canvas (default) — tool turns build widgets, the closing line goes out as `say`.
+  voice            — speech to speech, no tools: the model answers in its OWN voice, streamed to the client
+                     as binary PCM16 24 kHz frames between `speech_start` and `speech_end`. Used by the
+                     floating desktop orb (desktop/). `orb_down` during a reply interrupts it.
+                     Mic audio is passed to the model WHILE the user is still talking (stream_* in the
+                     session manager), so the reply starts ~0.25 s after `orb_up` instead of ~0.5 s.
+
 Run:   python3 backend/orchestrator.py            (stop the UI mock first: `npm run dev`, not `npm run demo`)
 Env:   ORCH_PORT (default 8765), ORCH_LOG=1 for per-turn timings
 
@@ -52,6 +60,13 @@ Rules:
 - If you didn't hear or see something, say so instead of guessing.
 Widgets you can create:
 {widgets}"""
+
+
+VOICE_SYSTEM = """You are Nova, a warm, casual friend the user talks to by voice on their computer. Everything you say is spoken aloud.
+Answer naturally, like a friend on a call: usually one to three short sentences. Go longer only if they ask for detail, and never more than about 80 words.
+No markdown, lists, emojis, sound effects or stage directions. Say numbers and units the way people speak them.
+If you didn't hear or understand something, say so and ask them to repeat instead of guessing."""
+MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 
 
 def log(*a):
@@ -142,6 +157,11 @@ class Connection:
         self.lock = asyncio.Lock()       # one model turn at a time
         self.session_lock = asyncio.Lock()
         self.tasks: set[asyncio.Task] = set()
+        self.mode = "canvas"             # or "voice" (speech to speech, see module docstring)
+        self.speaking = False            # voice mode: a reply is being streamed to the client
+        self.interrupted = False         # voice mode: orb_down during the reply, stop forwarding audio
+        self.streaming = False           # voice mode: mic frames go straight to the model
+        self.released: asyncio.Event | None = None  # voice mode: set on orb_up / orb_cancel
 
     async def send(self, msg: dict):
         try:
@@ -151,7 +171,11 @@ class Connection:
 
     async def ensure_session(self):
         async with self.session_lock:  # hello warms up a session while the first turn may also need one
-            if self.sm is None:
+            if self.sm is None and self.mode == "voice":
+                sm = SessionManager(VOICE_SYSTEM, watchdog=self.watchdog)
+                await sm.start()
+                self.sm = sm
+            elif self.sm is None:
                 widgets = self.widgets or ["recipe", "checklist", "timer", "stacked_bar", "html"]
                 sm = SessionManager(SYSTEM.format(widgets=widget_docs_text(widgets)),
                                     tools=tool_defs(widgets), watchdog=self.watchdog)
@@ -222,6 +246,107 @@ class Connection:
                 if not self.listening and not getattr(self, "_working", False):
                     await self.send({"type": "orb", "state": "idle"})
 
+    async def voice_turn(self, *, text: str | None = None, pcm: bytes | None = None, label: str = ""):
+        """Speech to speech: one model reply in text + audio, the audio streamed to the client as it arrives."""
+        async with self.lock:
+            await self._voice_reply(text=text, pcm=pcm, label=label)
+
+    async def utterance(self, released: asyncio.Event):
+        """Voice mode, orb_down → orb_up: stream the mic into the model while the user talks, reply on release.
+        `released` is created in on_message (not here) so an orb_cancel right after orb_down always finds it."""
+        async with self.lock:  # waits for an interrupted reply to wind down (~0.2 s); frames buffer meanwhile
+            if released.dropped:
+                return
+            try:
+                await self.ensure_session()
+                await self.sm.stream_start()
+                sent = 0
+                while sent < len(self.audio):  # what arrived while we waited
+                    chunk = bytes(self.audio[sent:])
+                    sent += len(chunk)
+                    await self.sm.stream_append(chunk)
+                self.streaming = released is self.released  # from here on_message appends directly
+                await released.wait()
+                self.streaming = False
+                pcm = bytes(self.audio)
+                secs, voiced = len(pcm) / 32000, voiced_seconds(pcm)
+                if released.dropped or secs < MIN_AUDIO_S or voiced < MIN_VOICED_S:
+                    await self.sm.stream_clear()
+                    if not released.dropped:
+                        log(f"ignored utterance: {secs:.1f}s audio, {voiced:.2f}s voiced")
+                    if not self.listening:
+                        await self.send({"type": "orb", "state": "idle"})
+                    return
+            except Exception as e:
+                self.streaming = False
+                log(f"utterance failed: {type(e).__name__}: {e}")
+                await self.send({"type": "orb", "state": "idle"})
+                return
+            await self._voice_reply(stream=True, label=f"{secs:.1f}s audio, {voiced:.1f}s voiced, streamed")
+
+    async def _voice_reply(self, *, text: str | None = None, pcm: bytes | None = None, stream: bool = False,
+                           label: str = ""):
+        t0 = time.time()
+        self.interrupted, self.speaking = False, False
+        await self.send({"type": "orb", "state": "thinking"})
+        first: list[float] = []
+        sent = 0
+
+        async def on_audio(chunk: bytes):
+            nonlocal sent
+            if self.interrupted:
+                return
+            if not self.speaking:
+                self.speaking = True
+                first.append(time.time() - t0)
+                await self.send({"type": "speech_start"})
+            try:
+                await self.ws.send(chunk)
+            except Exception:
+                pass
+            sent += len(chunk)
+            if sent / 48000 > MAX_REPLY_AUDIO_S:
+                self.sm.cancel()
+
+        try:
+            await self.ensure_session()
+            mods = ("text", "audio")
+            r = (await self.sm.stream_finish(mods, on_audio=on_audio) if stream
+                 else await self.sm.send_audio(pcm, modalities=mods, on_audio=on_audio) if pcm is not None
+                 else await self.sm.send_text(text, modalities=mods, on_audio=on_audio))
+            if self.speaking:
+                await self.send({"type": "speech_end", "text": r.text})
+            elif r.text and not self.interrupted:  # no audio came back: let the client voice the text
+                await self.send({"type": "say", "text": conversational(r.text)})
+            log(f"voice {label!r}: first audio after release {first[0] if first else -1:.2f}s, total {time.time() - t0:.1f}s, "
+                f"{r.audio_s:.1f}s speech{', INTERRUPTED' if r.cancelled else ''}, est {self.sm.est} tok: {r.text[:80]!r}")
+        except Exception as e:
+            log(f"voice turn failed: {type(e).__name__}: {e}")
+            if self.speaking:
+                await self.send({"type": "speech_end", "text": ""})
+            await self.send({"type": "say", "text": "Sorry, I lost that."})
+        finally:
+            self.speaking = False
+            if not self.listening:
+                await self.send({"type": "orb", "state": "idle"})
+
+    def drop_utterance(self) -> bool:
+        """End the utterance being streamed, if any, without a reply. True if there was one."""
+        ev = self.released
+        if ev is None or ev.is_set():
+            return False
+        ev.dropped = True
+        self.streaming = False
+        ev.set()
+        return True
+
+    def interrupt(self):
+        """orb_down while a voice reply is running: stop forwarding audio and stop the model."""
+        if self.lock.locked() and self.mode == "voice":
+            self.interrupted = True
+            if self.sm:
+                self.sm.cancel()
+
     def start_escalation(self, task: str) -> dict:
         wid = f"cloud_{int(time.time() * 1000) % 100000}"
         self._working = True
@@ -253,6 +378,8 @@ class Connection:
         if isinstance(raw, bytes):  # mic audio: PCM16 16 kHz mono, only between orb_down and orb_up
             if self.listening:
                 self.audio.extend(raw)
+                if self.streaming:
+                    await self.sm.stream_append(raw)
             return
         try:
             m = json.loads(raw)
@@ -261,23 +388,40 @@ class Connection:
         t = m.get("type")
         if t == "hello":
             self.widgets = m.get("widgets") or []
-            log(f"canvas connected, widgets: {self.widgets}")
+            self.mode = "voice" if m.get("mode") == "voice" else "canvas"
+            log(f"{self.mode} client connected" + (f", widgets: {self.widgets}" if self.mode == "canvas" else ""))
             self.spawn(self.ensure_session())  # warm up while the user gets ready
         elif t == "orb_down":
+            self.interrupt()
+            self.drop_utterance()  # a press without a release before it: throw that one away
             self.listening, self.audio = True, bytearray()
             await self.send({"type": "orb", "state": "listening"})
+            if self.mode == "voice":
+                ev = self.released = asyncio.Event()
+                ev.dropped = False  # orb_cancel (or a new press) throws this utterance away
+                self.spawn(self.utterance(ev))
+        elif t == "orb_cancel":  # drop the audio, no turn (a stopped reply, a press that became a drag)
+            self.listening, self.audio = False, bytearray()
+            if not self.drop_utterance() and not self.lock.locked():
+                await self.send({"type": "orb", "state": "idle"})
+        elif t == "orb_up" and self.mode == "voice":
+            self.listening = False
+            if self.released:
+                self.released.set()
         elif t == "orb_up":
             self.listening = False
             pcm = bytes(self.audio)
             secs, voiced = len(pcm) / 32000, voiced_seconds(pcm)
             if secs >= MIN_AUDIO_S and voiced >= MIN_VOICED_S:
-                self.spawn(self.turn(pcm=pcm, label=f"{secs:.1f}s audio, {voiced:.1f}s voiced"))
+                run = self.voice_turn if self.mode == "voice" else self.turn
+                self.spawn(run(pcm=pcm, label=f"{secs:.1f}s audio, {voiced:.1f}s voiced"))
             else:
                 log(f"ignored utterance: {secs:.1f}s audio, {voiced:.2f}s voiced")
                 if not self.lock.locked():
                     await self.send({"type": "orb", "state": "idle"})
         elif t == "text":  # dev/testing input, see docs/PROTOCOL.md
-            self.spawn(self.turn(text=m.get("text", ""), label=m.get("text", "")[:40]))
+            run = self.voice_turn if self.mode == "voice" else self.turn
+            self.spawn(run(text=m.get("text", ""), label=m.get("text", "")[:40]))
         elif t == "canvas_state":
             self.canvas = {w["id"]: {"widget": w["widget"], "props": w.get("props", {})} for w in m.get("widgets", [])}
         elif t == "event":

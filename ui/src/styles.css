@@ -85,3 +85,6 @@ body { background: var(--bg); color: var(--label); font-family: var(--sf); -webk
   .w { transition-duration: .2s; }
   .w.building::after { animation: none; }
 }
+
+/* ?orb: the floating desktop orb window is transparent around the sphere */
+html.orb-only, html.orb-only body { background: transparent; }

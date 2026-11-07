@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import type { ClientMsg, Importance, OrbState, Props, ServerMsg } from './protocol';
+import type { ClientMsg, Importance, Mode, OrbState, Props, ServerMsg } from './protocol';
 import { WIDGET_TYPES } from './widgets';
-import { speak, stopSpeaking } from './voice';
+import { speak, speechChunk, speechEnd, speechStart, stopSpeaking, unlockAudio } from './voice';
 
 export type WidgetState = {
   id: string;
@@ -56,7 +56,7 @@ function reducer(s: Widgets, a: Action): Widgets {
 }
 const rank = (i: Importance) => ({ satellite: 0, side: 1, hero: 2, full: 3 })[i];
 
-export function useCanvas(url: string) {
+export function useCanvas(url: string, mode: Mode = 'canvas') {
   const [widgets, dispatch] = useReducer(reducer, {});
   const [orb, setOrb] = useState<OrbState>('idle');
   const [speaking, setSpeaking] = useState(false);
@@ -72,26 +72,30 @@ export function useCanvas(url: string) {
     let retry: ReturnType<typeof setTimeout>;
     const connect = () => {
       const sock = new WebSocket(url);
+      sock.binaryType = 'arraybuffer';
       ws.current = sock;
       sock.onopen = () => {
         setConnected(true);
-        sock.send(JSON.stringify({ type: 'hello', widgets: WIDGET_TYPES } satisfies ClientMsg));
+        sock.send(JSON.stringify({ type: 'hello', widgets: mode === 'voice' ? [] : WIDGET_TYPES, mode } satisfies ClientMsg));
       };
       sock.onclose = () => {
         setConnected(false);
         if (!stopped) retry = setTimeout(connect, 1500);
       };
       sock.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) { speechChunk(e.data); return; } // LFM's voice, PCM16 24 kHz
         let m: ServerMsg;
         try { m = JSON.parse(e.data); } catch { return; }
         if (m.type === 'orb') setOrb(m.state);
         else if (m.type === 'say') speak(m.text, setSpeaking);
+        else if (m.type === 'speech_start') speechStart(setSpeaking);
+        else if (m.type === 'speech_end') speechEnd();
         else dispatch(m);
       };
     };
     connect();
     return () => { stopped = true; clearTimeout(retry); ws.current?.close(); };
-  }, [url]);
+  }, [url, mode]);
 
   // the canvas is the source of truth: report it after every change
   useEffect(() => {
@@ -104,10 +108,12 @@ export function useCanvas(url: string) {
 
   const orbDown = useCallback(() => {
     stopSpeaking(setSpeaking); // the user can always interrupt
+    unlockAudio();
     setOrb('listening');
     send({ type: 'orb_down' });
   }, [send]);
   const orbUp = useCallback(() => send({ type: 'orb_up' }), [send]);
+  const orbCancel = useCallback(() => { setOrb('idle'); send({ type: 'orb_cancel' }); }, [send]);
   // mic audio: raw PCM16 16 kHz mono, binary frames between orb_down and orb_up (PROTOCOL.md)
   const sendAudio = useCallback((frame: ArrayBuffer) => {
     if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(frame);
@@ -116,5 +122,5 @@ export function useCanvas(url: string) {
   const localUpdate = useCallback((id: string, props: Props) => dispatch({ type: 'local', id, props }), []);
   const gone = useCallback((id: string) => dispatch({ type: 'gone', id }), []);
 
-  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, sendAudio, emit, localUpdate, gone };
+  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, orbCancel, sendAudio, emit, localUpdate, gone };
 }

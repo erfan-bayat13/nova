@@ -9,35 +9,34 @@ everyday work, and Claude handles hard requests and teaches the local model new 
 
 ---
 
-## ▶ Start here (next session) — 2026-11-07
+## ▶ Start here (next session) — 2026-11-07, evening
 
-**Where it stopped:** the app works end to end (talk to the canvas → the local model builds widgets and
-answers), but **the voice the user hears is the browser's built-in voice, and the user hates it.**
-The goal is to play **LFM's own voice** (the 24 kHz voice in `prototype/examples.html`, which the user liked).
-Nothing for this is committed yet. All work up to here is committed (`af84b43`).
+**Direction change:** the canvas is parked. First the app is a **speech-to-speech agent on the Mac**: a
+floating desktop orb ([desktop/](desktop/README.md)) that answers in **LFM's own voice**. Widgets come back later.
 
-**What we learned while trying (don't repeat these):**
-1. **Text + speech output kills tool calls.** With `output_modalities: ["text","audio"]` the model just
-   *talks* ("Pasta for four.") and never calls `create_widget`. So the thinking/tool turns must stay
-   text-only, and the voice has to come from a separate speaking step.
-2. **"Repeat this exactly" doesn't work as TTS.** A separate realtime session told to say the line word
-   for word *answers* it instead ("Let me work that one out." → "Understood. I am ready when you are.").
-   Only 4/7 lines came out right. First audio was fast though (~0.4 s).
-3. **Untested, and the next thing to try:** the model card's TTS mode, with instructions
-   `"Perform TTS in English using a female voice."` and **speech-only** output (`["audio"]`). An earlier
-   attempt with text + speech output spoke only fragments. Note that speech-only *chat* overran with
-   silence (prototype/README), so check for a silent tail. Measure: ASR match vs the line, first-audio
-   time, trailing silence. Fallback if it fails: `llama-tts -m … -mm … --tts-voice female` (but that loads
-   a second model, ~1.6 GB, risky on 8 GB).
-4. If TTS works, the plan:
-   - `session_manager`/backend: after a turn's final line is known (CHAT reply or ACT confirmation),
-     open a short-lived TTS realtime session and stream its audio deltas to the canvas as **binary frames,
-     PCM16 24 kHz mono**, framed by `{type:"speech_start"}` / `{type:"speech_end", text}`. Keep `say` as
-     the fallback when there's no audio.
-   - Canvas (`ui/src/voice.ts` + `useCanvas.ts`, `ws.binaryType = "arraybuffer"`): schedule the 24 kHz
-     chunks on an AudioContext back to back, show `speaking` until the last one ends, stop everything
-     on `orb_down` (interrupt).
-   - Update PROTOCOL.md in the same commit.
+**What works now:**
+- **Voice mode** in the orchestrator (`hello {mode:"voice"}`): no tools, one text + audio reply per utterance,
+  audio streamed to the client as binary PCM16 24 kHz frames between `speech_start` / `speech_end`
+  ([PROTOCOL.md](docs/PROTOCOL.md)). This sidesteps the old problem (audio output kills tool calls) because voice
+  mode has no tools.
+- Measured: first sound 0.8–1.5 s (no warm-up needed), faster than real time, streamed audio matches the text
+  word for word, **interrupt ends the turn in 0.17 s** (`SessionManager.cancel()` → `response.cancel` works on llama-server).
+  Details: [backend/README.md](backend/README.md#voice-mode-speech-to-speech-the-desktop-orb).
+- **Desktop orb** (Electron): small (24 pt radius), hidden until you **hold Right ⌥** (global key hook,
+  uiohook-napi, needs Accessibility). Talk, let go, the reply starts **0.25–0.30 s** later because the mic
+  audio streams into the model *while you hold* (`SessionManager.stream_*`). Hold again to interrupt. It fades
+  a few seconds after the reply; context carries over. Same model as Liquid's playground (hold, stream, release).
+- Hands-free mode still exists behind `?handsfree` (`ui/src/conversation.ts`), but it's slower (0.8 s pause
+  detection first). llama-server has no server-side VAD: `turn_detection` is ignored.
+- `backend/voice_client.py`: headless test of all of the above.
+
+**Not yet verified by hand:** holding the real Right ⌥ key with the real mic (the backend path was tested
+with a clip streamed in real time). Needs the Accessibility permission on first run.
+
+**Next ideas:** packaging as a real .app, then bring the canvas back as a second window driven by tool turns, with the voice loop speaking the results.
+
+**Old learnings that still hold:** "repeat this exactly" isn't usable as TTS (it answers the line instead);
+speech-only output overruns with silence. Canvas mode still uses the browser voice for `say`.
 
 **⚠️ The Mac is an 8 GB M2: the user's machine got very slow during these tests.** Run one heavy thing at a
 time. Don't keep a test script, the orchestrator, the browser pane and llama-server all busy at once. Prefer
@@ -51,6 +50,12 @@ llama serve -hf LiquidAI/LFM3-Omni-2B-GGUF:Q4_K_M --reasoning off --temp 0 --por
 
 ```bash
 cd ~/Documents/hackathon && ORCH_PORT=8766 python3 backend/orchestrator.py
+```
+
+Desktop orb (starts the orchestrator on 8766 itself if it isn't running):
+
+```bash
+cd ~/Documents/hackathon/desktop && npm install && npm start
 ```
 
 Canvas (from `ui/`: `npm run demo` keeps the mock on 8765 and Vite on 5173), then open in **Chrome** (it needs
@@ -72,7 +77,8 @@ the real mic; the Claude app's browser pane has none): http://localhost:5173/?ws
 | Local model research (LFM3-Omni-2B on an 8 GB M2) | ✅ done, all limits measured | [prototype/README.md](prototype/README.md), [LFM3-Omni-2B-reference.md](LFM3-Omni-2B-reference.md) |
 | Session manager (context rotation, crash recovery, facts memory) | ✅ tested | [prototype/session_manager.py](prototype/session_manager.py) |
 | **Backend orchestrator** | ✅ **runs the cooking demo end to end on the real model** (via the test client) | [backend/](backend/README.md) |
-| Canvas UI | ✅ runs the full demo against the mock | [ui/](ui/README.md) |
+| **Desktop orb (speech to speech, LFM's own voice)** | ✅ **current focus**; headless-tested, mic round trip to verify by hand | [desktop/](desktop/README.md) |
+| Canvas UI | ✅ runs the full demo against the mock (parked) | [ui/](ui/README.md) |
 | Canvas ↔ real backend | ✅ **talk to it**: mic streams to the backend, the model builds widgets, the browser voice answers | §2 C |
 | Escalation to Claude | ❌ stub (placeholder widget) | [backend/escalate.py](backend/escalate.py) |
 | "Cloud teaches, local remembers" (saving Claude widgets) | ❌ not started | §6 |
@@ -92,6 +98,7 @@ hackathon/
 ├── ui/                         ★ the canvas (Vite + React + TypeScript)
 │   ├── mock/server.mjs         fake orchestrator that replays the demo
 │   └── README.md               how to run it, file map
+├── desktop/                    ★ floating desktop orb (Electron), loads ui/ with ?orb
 ├── backend/                    ★ the real orchestrator (Python, websockets)
 │   ├── orchestrator.py         canvas WebSocket :8765/canvas → model turns → canvas messages
 │   ├── tools.py                model tools + tool call → canvas message mapping
@@ -204,7 +211,7 @@ onto the screen: Claude writes the HTML once, the backend saves it, and next tim
 
 **Frontend:**
 - [x] **Stream mic audio to the backend** (`ui/src/mic.ts`): PCM16 16 kHz mono binary frames between `orb_down` and `orb_up`, last frame flushed before `orb_up`.
-- [ ] Play LFM's own audio instead of the browser voice (optional; only `ui/src/voice.ts` changes). Format not decided yet.
+- [x] Play LFM's own audio (voice mode / desktop orb): streamed PCM16 24 kHz, see PROTOCOL.md.
 - [ ] Camera: capture one full-resolution frame on request (`{type:"capture"}` → JPEG back). Backend has `SessionManager.see()` ready.
 - [ ] Vision demo scene in the mock.
 - [ ] Linked widgets decision: the model updated only `servings` on "make it for six". Canvas-side linking (ingredients read `servings` from the recipe) is the most reliable fix.
@@ -218,7 +225,7 @@ onto the screen: Claude writes the HTML once, the backend saves it, and next tim
 - [ ] **Save Claude-built widgets** (e.g. `backend/learned/`) and add them to the local model's widget list. That's the core of the pitch.
 - [ ] Shorter spoken lines (prompt tuning; target 1–6 words, currently ~4–8)
 - [ ] **Warm-up** to remove the cold first turn (~5–6 s; warm voice turns take ~2 s). Plan: send a warm-up turn with some context at `hello`.
-- [ ] Barge-in: `orb_down` during a turn should cancel it (`response.cancel` in the session manager)
+- [x] Barge-in in voice mode (`SessionManager.cancel()`). Canvas tool turns still run to the end.
 - [ ] Vision path: `capture` → `see()` once the canvas can send frames
 
 **Both:**

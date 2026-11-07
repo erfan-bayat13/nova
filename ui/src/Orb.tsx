@@ -9,9 +9,17 @@ type Props = {
   connected: boolean;
   tintWork: boolean; // cool tint while working (whether to show cloud work is still open)
   micLevel: React.MutableRefObject<(() => number) | null>;
+  speechLevel?: () => number; // loudness of the voice being played, drives the orb while speaking
   onDown: () => void;
   onUp: () => void;
+  // Floating desktop orb: dragging moves the window. A press that moves more than a few pixels
+  // stops being "talk" (start() drops the audio) and becomes a drag (by() moves the window).
+  onDrag?: { start: () => void; by: (dx: number, dy: number) => void };
+  onMenu?: () => void;
+  present?: boolean; // false: the orb shrinks away (desktop orb between conversations)
 };
+
+const DRAG_PX = 6;
 
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -22,11 +30,12 @@ export function Orb(p: Props) {
   live.current = p;
   const pos = useRef({ x: 0, y: 0, r: 0 });
   const holding = useRef(false);
+  const drag = useRef<{ x: number; y: number; on: boolean } | null>(null);
 
   useEffect(() => {
     const canvas = cv.current!;
     const ctx = canvas.getContext('2d')!;
-    const o = { cool: 0, level: 0, lt: 0, ltT: 0, env: 0, act: 0, spin: 0, t: 0, dim: 0 };
+    const o = { appear: 0, cool: 0, level: 0, lt: 0, ltT: 0, env: 0, act: 0, spin: 0, t: 0, dim: 0 };
     let raf = 0, last = performance.now(), W = 0, H = 0;
 
     const resize = () => {
@@ -41,12 +50,13 @@ export function Orb(p: Props) {
 
     const frame = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000); last = now; o.t += dt;
-      const { spot, state, connected, tintWork, micLevel } = live.current;
+      const { spot, state, connected, tintWork, micLevel, speechLevel } = live.current;
       const P = pos.current;
       if (!P.r) Object.assign(P, spot);
       const k = 1 - Math.pow(0.012, dt);
       P.x += (spot.x - P.x) * k; P.y += (spot.y - P.y) * k; P.r += (spot.r - P.r) * k;
 
+      o.appear += ((live.current.present === false ? 0 : 1) - o.appear) * Math.min(1, dt * 9);
       o.cool += ((state === 'working' && tintWork ? 1 : 0) - o.cool) * Math.min(1, dt * 2);
       o.dim += ((connected ? 0 : 1) - o.dim) * Math.min(1, dt * 3);
       if (state === 'listening') {
@@ -55,7 +65,10 @@ export function Orb(p: Props) {
         else { o.ltT -= dt; if (o.ltT <= 0) { o.lt = Math.random() < 0.2 ? 0.05 : 0.25 + Math.random() * 0.75; o.ltT = 0.07 + Math.random() * 0.12; } }
       } else o.lt = 0;
       o.level += (o.lt - o.level) * Math.min(1, dt * 12);
-      const envT = state === 'speaking' ? 0.3 + 0.7 * Math.abs(Math.sin(o.t * 6.8) * Math.sin(o.t * 2.2)) : 0;
+      const voice = state === 'speaking' && speechLevel ? speechLevel() : -1;
+      const envT = state !== 'speaking' ? 0
+        : voice >= 0 ? 0.2 + 0.8 * voice // the real voice
+        : 0.3 + 0.7 * Math.abs(Math.sin(o.t * 6.8) * Math.sin(o.t * 2.2));
       o.env += (envT - o.env) * Math.min(1, dt * 10);
       const busy = state === 'thinking' || state === 'working';
       o.act += ((busy ? 1 : 0) - o.act) * Math.min(1, dt * 4);
@@ -80,20 +93,48 @@ export function Orb(p: Props) {
       className="orb"
       role="button"
       aria-label="Hold to talk"
-      onPointerDown={(e) => { if (!hit(e)) return; holding.current = true; cv.current!.setPointerCapture(e.pointerId); p.onDown(); }}
-      onPointerUp={() => { if (holding.current) { holding.current = false; p.onUp(); } }}
-      onPointerCancel={() => { if (holding.current) { holding.current = false; p.onUp(); } }}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || !hit(e)) return;
+        holding.current = true;
+        drag.current = { x: e.screenX, y: e.screenY, on: false };
+        cv.current!.setPointerCapture(e.pointerId);
+        p.onDown();
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!holding.current || !d || !p.onDrag) return;
+        const dx = e.screenX - d.x, dy = e.screenY - d.y;
+        if (!d.on && Math.hypot(dx, dy) < DRAG_PX) return;
+        if (!d.on) { d.on = true; p.onDrag.start(); }
+        p.onDrag.by(dx, dy);
+        d.x = e.screenX; d.y = e.screenY;
+      }}
+      onPointerUp={() => {
+        if (!holding.current) return;
+        holding.current = false;
+        if (!drag.current?.on) p.onUp();
+        drag.current = null;
+      }}
+      onPointerCancel={() => {
+        if (!holding.current) return;
+        holding.current = false;
+        if (!drag.current?.on) p.onUp();
+        drag.current = null;
+      }}
+      onContextMenu={(e) => { if (p.onMenu) { e.preventDefault(); p.onMenu(); } }}
     />
   );
 }
 
-type O = { cool: number; level: number; env: number; act: number; spin: number; t: number; dim: number };
+type O = { appear: number; cool: number; level: number; env: number; act: number; spin: number; t: number; dim: number };
 
 function draw(ctx: CanvasRenderingContext2D, W: number, H: number, P: { x: number; y: number; r: number }, o: O) {
   ctx.clearRect(0, 0, W, H);
-  const s = reduce ? 1 : 1 + 0.018 * Math.sin(o.t * 1.1) + o.level * 0.14 + o.env * 0.06;
+  if (o.appear < 0.01) return;
+  const grow = 1 - Math.pow(1 - o.appear, 3); // ease out
+  const s = grow * (reduce ? 1 : 1 + 0.018 * Math.sin(o.t * 1.1) + o.level * 0.14 + o.env * 0.06);
   const r = P.r * s, { x, y } = P;
-  ctx.globalAlpha = 1 - o.dim * 0.55;
+  ctx.globalAlpha = (1 - o.dim * 0.55) * o.appear;
 
   const sh = ctx.createRadialGradient(x, y + r * 0.9, 0, x, y + r * 0.9, r * 1.3);
   sh.addColorStop(0, 'rgba(0,0,0,.5)'); sh.addColorStop(1, 'rgba(0,0,0,0)');

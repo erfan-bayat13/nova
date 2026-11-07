@@ -40,6 +40,37 @@ ORCH_PORT=8766 python3 backend/orchestrator.py
 ORCH_PORT=8766 python3 backend/test_client.py
 ```
 
+## Voice mode (speech to speech, the desktop orb)
+
+When the client's `hello` has `mode: "voice"` (the floating orb in [desktop/](../desktop/README.md)), there
+are no tools and no widgets. Each utterance is one model reply in **text + audio**, and the audio is
+streamed to the client as binary PCM16 24 kHz frames between `speech_start` and `speech_end`
+(PROTOCOL.md). The voice is LFM's own. The system prompt is `VOICE_SYSTEM` (Nova, 1–3 sentences,
+≤ ~80 words), and replies over 35 s of audio are cut off because quality drops past that.
+
+Test without a mic (scripted lines, an interrupt, saves `prototype/logs/voice_<n>.wav`):
+
+```bash
+ORCH_PORT=8766 python3 backend/voice_client.py
+```
+
+In voice mode the mic audio is **streamed into the model while the user holds** (`SessionManager.stream_start /
+stream_append / stream_finish / stream_clear`): `orb_down` starts an utterance, every binary frame is appended
+right away, `orb_up` commits it. Release → first sound **0.25–0.30 s** (4 s utterance, every turn including
+the first), vs ~0.5 s when the audio is sent at release. Silent or too-short presses are cleared
+(`input_audio_buffer.clear`), and a press during a reply interrupts it first. Test:
+`ORCH_PORT=8766 python3 backend/voice_client.py some_16k_mono.wav`.
+
+Measured 2026-11-07 (M2 8 GB, warm server, text input):
+
+| | |
+|---|---|
+| First sound | 0.8–1.5 s (the first turn too: the voice prompt is small, no warm-up needed) |
+| Generation | faster than real time (12.6 s of speech done in 7.0 s) |
+| Trailing silence | 0–0.2 s |
+| Speech vs. text | ASR of the streamed audio matched the reply text word for word |
+| Interrupt (`orb_down` mid-reply) | turn ends 0.17 s later; the next turn answered normally |
+
 ## Files
 
 | File | What |
@@ -48,6 +79,7 @@ ORCH_PORT=8766 python3 backend/test_client.py
 | `tools.py` | Tool definitions for the model (built from the canvas's `hello` widget list) and `to_canvas()`: tool call → canvas messages |
 | `escalate.py` | **Stub** for the Claude path. Returns a placeholder `html` widget after 1.5 s. Its docstring has the contract and the plan. |
 | `test_client.py` | Fake canvas for end-to-end tests |
+| `voice_client.py` | Fake desktop orb for the voice mode: timings, saved audio, interrupt test |
 
 ## How a turn works
 
@@ -84,4 +116,4 @@ ORCH_PORT=8766 python3 backend/test_client.py
 - **The model sometimes copies the `[Canvas: …]` prefix into its spoken line.** `spoken_line()` strips bracketed text.
 - **First turn is slow** (~6 s): the system prompt + tool list is processed on the first message.
 - **"Make it for six" updated `servings` only, not the steps or ingredients.** The tool loop allows several updates, but the model doesn't always do them. The handoff's linked-widgets decision (option c, canvas-side) is still open.
-- **No barge-in on the model side**: `orb_down` during a turn flips the orb to listening, but the running turn still finishes and its messages still arrive.
+- **Barge-in works in voice mode only** (`SessionManager.cancel()` → `response.cancel`). In canvas mode `orb_down` during a turn flips the orb to listening, but the running tool turn still finishes.
