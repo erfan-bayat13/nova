@@ -27,6 +27,9 @@ python3 backend/orchestrator.py
 cd ui && npm run dev
 ```
 
+Talk to it from the canvas, next to the mock: run the orchestrator with `ORCH_PORT=8766`, then open
+http://localhost:5173/?ws=ws://localhost:8766/canvas, hold the orb or Space, speak, let go.
+
 Test without the UI (a fake canvas plays the demo script, one line as real speech):
 
 ```bash
@@ -72,7 +75,9 @@ ORCH_PORT=8766 python3 backend/test_client.py
 
 - **The model rarely calls `say`.** It ends with a plain-text line instead, so we speak that line (clipped). `tool_choice: "required"` is accepted by the server but not enforced after tool results. Forcing a specific function isn't supported.
 - **Spoken lines are longer than the 1–6 words the UI wants** ("Updated to six servings and a 10-minute timer."). The prompt asks for 1–6, and the orchestrator clips at 8.
-- **Voice turns are slower than text** (6–8 s vs 2–3 s for the same kind of request). Not profiled yet. Running background transcription during the reply made it worse, so it now runs after.
+- **The first turn is cold** (~5–6 s). Warm turns, voice included, take ~2 s (canvas test: "start a ten minute timer" → timer in 2.1 s). A warm-up turn at `hello` is the next step.
+- **Silence is ignored:** under 0.25 s of actual speech (30 ms windows above RMS 500) is dropped. Before this gate, a silent tap produced a made-up "Grilled Chicken Skillet" recipe.
+- **The model sometimes copies the `[Canvas: …]` prefix into its spoken line.** `spoken_line()` strips bracketed text.
 - **First turn is slow** (~6 s): the system prompt + tool list is processed on the first message.
 - **"Make it for six" updated `servings` only, not the steps or ingredients.** The tool loop allows several updates, but the model doesn't always do them. The handoff's linked-widgets decision (option c, canvas-side) is still open.
 - **No barge-in on the model side**: `orb_down` during a turn flips the orb to listening, but the running turn still finishes and its messages still arrive.

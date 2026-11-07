@@ -4,7 +4,7 @@ import { layout } from './layout';
 import { Orb } from './Orb';
 import { WidgetFrame } from './WidgetFrame';
 import { REGISTRY } from './widgets';
-import { startMic } from './mic';
+import { startMic, type Mic } from './mic';
 
 const q = new URLSearchParams(location.search);
 const WS_URL = q.get('ws') ?? `ws://${location.hostname || 'localhost'}:8765/canvas`;
@@ -14,8 +14,10 @@ export function App() {
   const stage = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: innerWidth, h: innerHeight });
   const c = useCanvas(WS_URL);
-  const mic = useRef<(() => number) | null>(null);
+  const mic = useRef<Mic | null>(null);
+  const micLevel = useRef<(() => number) | null>(null);
   const micAsked = useRef(false);
+  const held = useRef(false);
 
   useLayoutEffect(() => {
     const el = stage.current!;
@@ -24,15 +26,31 @@ export function App() {
     return () => ro.disconnect();
   }, []);
 
+  // Hold the orb (or Space) to talk: mic audio streams to the orchestrator as PCM16 16 kHz frames
+  // until release. The last partial frame is flushed before orb_up so the utterance isn't cut.
   const down = () => {
+    held.current = true;
     c.orbDown();
-    if (!micAsked.current) { micAsked.current = true; startMic().then((f) => (mic.current = f)); }
+    if (mic.current) mic.current.start(c.sendAudio);
+    else if (!micAsked.current) {
+      micAsked.current = true;
+      startMic().then((m) => {
+        mic.current = m;
+        micLevel.current = m?.level ?? null;
+        if (m && held.current) m.start(c.sendAudio); // permission prompt finished while still holding
+      });
+    }
+  };
+  const up = () => {
+    held.current = false;
+    mic.current?.stop();
+    c.orbUp();
   };
 
   // Space works as hold-to-talk too
-  const keys = useRef({ down, up: c.orbUp, held: false });
+  const keys = useRef({ down, up, held: false });
   keys.current.down = down;
-  keys.current.up = c.orbUp;
+  keys.current.up = up;
   useEffect(() => {
     const k = keys.current;
     const kd = (e: KeyboardEvent) => {
@@ -49,7 +67,7 @@ export function App() {
 
   return (
     <div className="stage" ref={stage}>
-      <Orb spot={orb} state={c.orb} connected={c.connected} tintWork={TINT_WORK} micLevel={mic} onDown={down} onUp={c.orbUp} />
+      <Orb spot={orb} state={c.orb} connected={c.connected} tintWork={TINT_WORK} micLevel={micLevel} onDown={down} onUp={up} />
       {list.map((w) => {
         const Comp = REGISTRY[w.widget];
         return (

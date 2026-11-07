@@ -108,9 +108,13 @@ export function useCanvas(url: string) {
     send({ type: 'orb_down' });
   }, [send]);
   const orbUp = useCallback(() => send({ type: 'orb_up' }), [send]);
+  // mic audio: raw PCM16 16 kHz mono, binary frames between orb_down and orb_up (PROTOCOL.md)
+  const sendAudio = useCallback((frame: ArrayBuffer) => {
+    if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(frame);
+  }, []);
   const emit = useCallback((id: string, name: string, data?: unknown) => send({ type: 'event', id, name, data }), [send]);
   const localUpdate = useCallback((id: string, props: Props) => dispatch({ type: 'local', id, props }), []);
   const gone = useCallback((id: string) => dispatch({ type: 'gone', id }), []);
 
-  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, emit, localUpdate, gone };
+  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, sendAudio, emit, localUpdate, gone };
 }

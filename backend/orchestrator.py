@@ -16,7 +16,7 @@ the recipe AND the ingredients in one utterance.
 """
 from __future__ import annotations
 
-import asyncio, json, os, re, sys, time
+import array, asyncio, json, os, re, sys, time
 
 from websockets.asyncio.server import serve
 
@@ -31,11 +31,13 @@ PORT = int(os.environ.get("ORCH_PORT", 8765))
 LOG = os.environ.get("ORCH_LOG", "1") == "1"
 MAX_STEPS = 5          # tool calls per utterance
 MIN_AUDIO_S = 0.3      # ignore taps shorter than this
+MIN_VOICED_S = 0.25    # ...and utterances with less actual speech than this (the model invents content from silence)
+VOICE_RMS = 500        # PCM16 RMS above which a 30 ms window counts as speech
 
 SYSTEM = """You are Nova, the voice of a visual canvas. The user talks; you change the canvas by calling tools.
 Rules:
 - Change the canvas only through tool calls.
-- When you're done with the tools, reply with ONE very short, warm spoken line (1-6 words), e.g. "Pasta for four." or "Six it is. Timer's running." Nothing else.
+- When you're done with the tools, reply with ONE very short, warm spoken line (1-6 words), e.g. "Pasta for four." or "Six it is. Timer's running." Nothing else. Never mention the canvas, widgets or brackets in it.
 - When the user says they're done or finished, call clear_canvas.
 - The screen is the answer: never read widget contents out loud.
 - Each user message starts with [Canvas: ...], the widgets on screen right now. Update existing widgets by id instead of creating duplicates.
@@ -51,9 +53,23 @@ def log(*a):
         print(time.strftime("%H:%M:%S"), *a, flush=True)
 
 
+def voiced_seconds(pcm: bytes, rate: int = 16000) -> float:
+    """Seconds of 30 ms windows loud enough to be speech."""
+    a = array.array("h", pcm[: len(pcm) // 2 * 2])
+    win = int(rate * 0.03)
+    loud = 0
+    for i in range(0, len(a) - win + 1, win):
+        seg = a[i:i + win]
+        if (sum(x * x for x in seg) / win) ** 0.5 > VOICE_RMS:
+            loud += 1
+    return loud * 0.03
+
+
 def spoken_line(text: str, max_words: int = 8) -> str:
-    """First sentence of the model's closing text, at most `max_words` words."""
-    first = re.split(r"(?<=[.!?])\s", text.strip(), maxsplit=1)[0]
+    """First sentence of the model's closing text, at most `max_words` words. Drops [bracketed] echoes
+    of the canvas context, which the model sometimes copies into its reply."""
+    text = re.sub(r"\[[^\]]*\]?", "", text).strip()
+    first = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
     words = first.split()
     if len(words) <= max_words:
         return first
@@ -218,10 +234,13 @@ class Connection:
         elif t == "orb_up":
             self.listening = False
             pcm = bytes(self.audio)
-            if len(pcm) / 32000 >= MIN_AUDIO_S:
-                self.spawn(self.turn(pcm=pcm, label=f"{len(pcm) / 32000:.1f}s audio"))
-            elif not self.lock.locked():
-                await self.send({"type": "orb", "state": "idle"})
+            secs, voiced = len(pcm) / 32000, voiced_seconds(pcm)
+            if secs >= MIN_AUDIO_S and voiced >= MIN_VOICED_S:
+                self.spawn(self.turn(pcm=pcm, label=f"{secs:.1f}s audio, {voiced:.1f}s voiced"))
+            else:
+                log(f"ignored utterance: {secs:.1f}s audio, {voiced:.2f}s voiced")
+                if not self.lock.locked():
+                    await self.send({"type": "orb", "state": "idle"})
         elif t == "text":  # dev/testing input, see docs/PROTOCOL.md
             self.spawn(self.turn(text=m.get("text", ""), label=m.get("text", "")[:40]))
         elif t == "canvas_state":

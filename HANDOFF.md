@@ -19,7 +19,7 @@ everyday work, and Claude handles hard requests and teaches the local model new 
 | Session manager (context rotation, crash recovery, facts memory) | ✅ tested | [prototype/session_manager.py](prototype/session_manager.py) |
 | **Backend orchestrator** | ✅ **runs the cooking demo end to end on the real model** (via the test client) | [backend/](backend/README.md) |
 | Canvas UI | ✅ runs the full demo against the mock | [ui/](ui/README.md) |
-| Canvas ↔ real backend | ⚠️ connects, but the canvas doesn't stream mic audio yet | §6 |
+| Canvas ↔ real backend | ✅ **talk to it**: mic streams to the backend, the model builds widgets, the browser voice answers | §2 C |
 | Escalation to Claude | ❌ stub (placeholder widget) | [backend/escalate.py](backend/escalate.py) |
 | "Cloud teaches, local remembers" (saving Claude widgets) | ❌ not started | §6 |
 | Camera / vision in the app | ❌ backend has `see()`, canvas doesn't capture frames | §6 |
@@ -81,9 +81,15 @@ ORCH_PORT=8766 python3 backend/orchestrator.py
 ORCH_PORT=8766 python3 backend/test_client.py
 ```
 
-**C. Canvas + real backend:** start llama-server (as in B), then `python3 backend/orchestrator.py` (port
-8765), then `cd ui && npm run dev` (**not** `demo`, since the mock also takes 8765). It connects, but
-until the canvas streams mic audio (§6) nothing reaches the model from the UI.
+**C. Canvas + real backend (talk to the local model):** start llama-server (as in B), then
+
+```bash
+ORCH_PORT=8766 python3 backend/orchestrator.py
+```
+
+and open **http://localhost:5173/?ws=ws://localhost:8766/canvas** in Chrome (the UI from A, or `cd ui && npm run dev`).
+Hold the orb or Space, speak, let go. Allow the microphone on the first press. Port 8766 lets the mock keep
+8765. Without `?ws=`, run the orchestrator on 8765 and use `npm run dev` instead of `npm run demo`.
 
 ⚠️ **Always run llama-server with `-np 2 -c 16384` on the 8 GB Mac.** The defaults (4 slots × 32K) crashed the machine.
 
@@ -143,8 +149,7 @@ onto the screen: Claude writes the HTML once, the backend saves it, and next tim
 ## 6. Open items
 
 **Frontend:**
-- [ ] **Stream mic audio to the backend.** Format agreed and implemented on the backend side: raw PCM16
-      16 kHz mono as binary WebSocket frames between `orb_down` and `orb_up` (PROTOCOL.md). Right now the mic only animates the orb.
+- [x] **Stream mic audio to the backend** (`ui/src/mic.ts`): PCM16 16 kHz mono binary frames between `orb_down` and `orb_up`, last frame flushed before `orb_up`.
 - [ ] Play LFM's own audio instead of the browser voice (optional; only `ui/src/voice.ts` changes). Format not decided yet.
 - [ ] Camera: capture one full-resolution frame on request (`{type:"capture"}` → JPEG back). Backend has `SessionManager.see()` ready.
 - [ ] Vision demo scene in the mock.
@@ -158,7 +163,7 @@ onto the screen: Claude writes the HTML once, the backend saves it, and next tim
 - [ ] **Escalation for real:** call Claude in `backend/escalate.py` (contract in its docstring), return a built-in widget or `html`
 - [ ] **Save Claude-built widgets** (e.g. `backend/learned/`) and add them to the local model's widget list. That's the core of the pitch.
 - [ ] Shorter spoken lines (prompt tuning; target 1–6 words, currently ~4–8)
-- [ ] Profile and speed up voice turns (6–8 s vs 2–3 s for text)
+- [ ] **Warm-up** to remove the cold first turn (~5–6 s; warm voice turns take ~2 s). Plan: send a warm-up turn with some context at `hello`.
 - [ ] Barge-in: `orb_down` during a turn should cancel it (`response.cancel` in the session manager)
 - [ ] Vision path: `capture` → `see()` once the canvas can send frames
 
