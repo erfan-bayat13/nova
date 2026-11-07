@@ -232,6 +232,12 @@ class SessionManager:
         if self.tools:
             session["tools"] = [{"type": "function", **t} for t in self.tools]
         await self.ws.send(json.dumps({"type": "session.update", "session": session}))
+        while True:  # the server must apply instructions/tools before the first message, or it rejects them
+            ev = json.loads(await asyncio.wait_for(self.ws.recv(), 30))
+            if ev["type"] == "session.updated":
+                break
+            if ev["type"] == "error":
+                raise RuntimeError(f'session.update failed: {ev.get("error", {}).get("message", ev)}')
         self.est = (await asyncio.to_thread(count_tokens, instr)) + 20
         if self.tools:
             self.est += await asyncio.to_thread(count_tokens, json.dumps(self.tools)) + 20
@@ -310,7 +316,8 @@ class SessionManager:
         await self._summarize()
         await self._open()
 
-    async def _turn(self, send_items, incoming: int, modalities, entry=None, rotated=False) -> Result:
+    async def _turn(self, send_items, incoming: int, modalities, entry=None, rotated=False,
+                    tool_choice: str = "auto", respond: bool = True) -> Result:
         """Send items + response.create. On server loss: restart, reopen, resend once."""
         for attempt in (1, 2):
             try:
@@ -318,7 +325,10 @@ class SessionManager:
                     raise ServerGone("no session")
                 await send_items()
                 self.est += incoming
-                r = await self._respond(modalities)
+                if not respond:  # e.g. filing the result of a final `say` call without asking for more
+                    self._awaiting_tool_result = False
+                    return Result()
+                r = await self._respond(modalities, tool_choice)
                 r.rotated, r.recovered = rotated, attempt == 2
                 if entry is not None:
                     entry.pop("pending", None)
@@ -330,9 +340,12 @@ class SessionManager:
                 self._log(f"lost server ({type(e).__name__}); recovering")
                 await self._recover()
 
-    async def _respond(self, modalities) -> Result:
-        await self.ws.send(json.dumps({"type": "response.create",
-                                       "response": {"output_modalities": list(modalities)}}))
+    async def _respond(self, modalities, tool_choice: str = "auto") -> Result:
+        """tool_choice: "auto" | "none" | "required" (the server rejects forcing a specific function)."""
+        resp = {"output_modalities": list(modalities)}
+        if tool_choice != "auto":
+            resp["tool_choice"] = tool_choice
+        await self.ws.send(json.dumps({"type": "response.create", "response": resp}))
         t0, r = time.time(), Result()
         while True:
             ev = json.loads(await asyncio.wait_for(self.ws.recv(), 120))
@@ -369,10 +382,13 @@ class SessionManager:
         return r
 
     # ---------------- public turns
-    async def send_text(self, text: str, modalities=("text",), remember: bool = True) -> Result:
-        n = await asyncio.to_thread(count_tokens, text) + ITEM_OVERHEAD
+    async def send_text(self, text: str, modalities=("text",), remember: bool = True, context: str = "",
+                        tool_choice: str = "auto") -> Result:
+        """`context` (e.g. the current canvas state) is sent with the message but kept out of history/facts."""
+        full = f"{context}\n{text}" if context else text
+        n = await asyncio.to_thread(count_tokens, full) + ITEM_OVERHEAD
         item = {"type": "conversation.item.create", "item": {
-            "type": "message", "role": "user", "content": [{"type": "input_text", "text": text}]}}
+            "type": "message", "role": "user", "content": [{"type": "input_text", "text": full}]}}
 
         async def send():
             await self.ws.send(json.dumps(item))
@@ -381,11 +397,15 @@ class SessionManager:
         self.history.append(entry)
         if remember:
             self._remember(text)
-        return await self._turn(send, n, modalities, entry, rotated)
+        return await self._turn(send, n, modalities, entry, rotated, tool_choice)
 
-    async def send_audio(self, pcm16k: bytes, modalities=("text", "audio")) -> Result:
+    async def send_audio(self, pcm16k: bytes, modalities=("text", "audio"), context: str = "",
+                         tool_choice: str = "auto") -> Result:
+        """`context` is sent as a short text message right before the audio, in the same turn."""
         secs = len(pcm16k) / 32000
         n = int(secs * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD
+        if context:
+            n += await asyncio.to_thread(count_tokens, context) + ITEM_OVERHEAD
         rotated = await self._make_room(n, modalities)
         entry = {"role": "user", "text": "", "pending": True}
         self.history.append(entry)
@@ -395,14 +415,19 @@ class SessionManager:
             for f in await asyncio.to_thread(extract_facts, entry["text"]):
                 if f not in self.facts:
                     self.facts.append(f)
-        self._bg.append(asyncio.create_task(fill()))
 
         async def send():
+            if context:
+                await self.ws.send(json.dumps({"type": "conversation.item.create", "item": {
+                    "type": "message", "role": "user", "content": [{"type": "input_text", "text": context}]}}))
             for i in range(0, len(pcm16k), 32000):
                 await self.ws.send(json.dumps({"type": "input_audio_buffer.append",
                                                "audio": base64.b64encode(pcm16k[i:i + 32000]).decode()}))
             await self.ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
-        return await self._turn(send, n, modalities, entry, rotated)
+        r = await self._turn(send, n, modalities, entry, rotated, tool_choice)
+        # transcribe only after the reply: running ASR at the same time on the GPU tripled the turn time
+        self._bg.append(asyncio.create_task(fill()))
+        return r
 
     async def send_tool_result(self, call_id: str, output, modalities=("text",)) -> Result:
         payload = json.dumps(output)
@@ -415,6 +440,20 @@ class SessionManager:
         self.history.append({"role": "tool", "text": payload[:200]})
         # tool output must follow its call in the same session, so never rotate here
         return await self._turn(send, n, modalities)
+
+    async def send_tool_results(self, results: list[tuple[str, object]], modalities=("text",),
+                                tool_choice: str = "auto", respond: bool = True) -> Result:
+        """Several tool outputs (one per call of the previous reply), then one reply (unless respond=False)."""
+        payloads = [(cid, json.dumps(out)) for cid, out in results]
+        n = sum([await asyncio.to_thread(count_tokens, p) + ITEM_OVERHEAD for _, p in payloads])
+
+        async def send():
+            for cid, p in payloads:
+                await self.ws.send(json.dumps({"type": "conversation.item.create", "item": {
+                    "type": "function_call_output", "call_id": cid, "output": p}}))
+        for _, p in payloads:
+            self.history.append({"role": "tool", "text": p[:200]})
+        return await self._turn(send, n, modalities, tool_choice=tool_choice, respond=respond)
 
     async def see(self, jpeg: bytes, question: str, modalities=("text", "audio")) -> Result:
         """Realtime takes no images: describe the frame on the chat endpoint, then answer in the session."""

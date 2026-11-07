@@ -20,3 +20,6 @@ prototype/logs/*.mp4
 .env
 .env.*
 .DS_Store
+
+# local server / orchestrator logs
+*.log

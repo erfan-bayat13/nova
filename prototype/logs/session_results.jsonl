@@ -26,3 +26,4 @@
 {"test": "rotation", "turn": 30, "recall": 3, "est": 1162, "rotations": 2, "recoveries": 0, "reply": "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts.", "ts": "12:15:02"}
 {"test": "rotation", "turn": 40, "recall": 3, "est": 976, "rotations": 3, "recoveries": 0, "reply": "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts.", "ts": "12:15:39"}
 {"test": "rotation_summary", "worst": 3, "rotations": 3, "rot_secs": [1.0, 1.0, 1.0], "summary": "The user's name is Sam. The user's dog is called Biscuit. The user is allergic to peanuts. The user is cooking pasta for four.", "ts": "12:15:39"}
+{"test": "crash", "turns": 195, "est_at_crash": [10758], "recall": 3, "restarts": 1, "ts": "12:21:53"}

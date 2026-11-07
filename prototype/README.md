@@ -279,9 +279,10 @@ The orchestrator talks to the model **only through this**. It guards against the
 |---|---|
 | A realtime session that fills 8K **crashes the whole server** | Estimates context use and **rotates** to a fresh session before `rotate_at` (6,000) |
 | Server reports only output tokens | Text: exact count via `/tokenize`. Audio in: 12.6 tok/s. Replies: exact `usage.output_tokens` (includes audio, ~13 tok/s of speech). +12 per item. |
-| Rotation loses memory | Summarizes the conversation into third-person facts about the user (chat endpoint, 2nd slot) and puts them, plus the last 4 turns, in the new session's `instructions` |
-| Rotating mid-turn was slow (3–6 s) | Summary is **prefetched in the background** 1,500 tokens before the limit, so rotation takes ~1 s |
-| Realtime gives no transcript of user speech | Transcribes user audio in the background so summaries include what the user said |
+| Rotation loses memory | **Extracts lasting facts from every user message** in the background (chat endpoint, 2nd slot, JSON schema, ~0.5 s). The new session's `instructions` carry the fact list + the last 4 turns verbatim. |
+| One-shot summaries from the 2B model dropped facts and mixed up identities ("My name is Nova", lost "sister Mia") | Replaced by per-message extraction (above). Only facts starting with "The user" are kept, which filters echoed requests and trivia. |
+| Rotating mid-turn was slow (3–7 s with summaries) | No summarizing step any more: rotation takes **~1.0 s** |
+| Realtime gives no transcript of user speech | Transcribes user audio in the background, then extracts facts from the transcript |
 | Server can still die | `ServerWatchdog` attaches to the running server, or spawns one if none answers. The manager restarts it, reopens from the summary, and retries the turn once (`Result.recovered`) |
 | Tool results must follow their call | Never rotates between a tool call and its result |
 | Realtime takes no images | `see(jpeg, question)` describes the frame on the chat endpoint, then answers in the session |
@@ -299,8 +300,12 @@ print(sm.stats)  # est_tokens, rotations, recoveries, server_restarts
 
 **Test results** (`python3 test_session.py [rotation|tools|long|crash]`):
 - `tools` ✅ create_widget → tool result → spoken confirmation (first sound 0.25 s) → spoken "start a ten minute timer" → `start_timer(10)`.
-- `rotation` ✅ (budget forced down to 1,500): 3 rotations in 40 turns, recall 3/3 every time, ~1 s per rotation.
-  - The first version wrote the summary in first person and got the identities wrong ("My name is Nova"). Fixed by labelling speakers and asking for third-person facts about the user only.
+- `rotation` ✅ (budget forced down to 1,500): 3 rotations in 40 turns, recall 3/3 every time, 1.0 s per rotation. Facts from spoken turns were captured too.
+- `carry` ✅ A fact said right before a rotation ("my sister is called Mia") survives it. This **failed** with the old summary approach (answered "Lily").
+- `long` ✅ Real budget (6,000), 160 mixed turns (text, speech out, voice in): 2 rotations, recall 3/3 at every check, no crash, 25% memory free, 321 s.
+- `crash` ✅ Rotation off → the server crashed after 195 turns. The watchdog restarted it in **3.0 s**, the session reopened with the facts, recall 3/3, and speech worked.
+  - **Estimate calibration:** at the crash the estimate was **10,758** tokens against the real limit of 8,192, so it **over-counts by ~30%**. That's the safe side: `rotate_at=6000` ≈ 4,600 real tokens. Raise `rotate_at` toward ~7,000 if more context per session is needed. Audio-heavy sessions weren't calibrated separately.
+- Note: the watchdog's own server runs detached (`start_new_session`) and keeps running after the app exits. Its log goes to `logs/server_managed.log`.
 
 ---
 

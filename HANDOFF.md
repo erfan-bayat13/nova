@@ -1,10 +1,28 @@
-# Handoff: frontend → backend
+# Handoff: the whole project
 
-**Date:** 2026-11-07 · **From:** frontend (canvas UI) · **To:** backend (orchestrator, harness, models)
+**Updated:** 2026-11-07 · **Covers:** concept, model research, backend (orchestrator), frontend (canvas)
 
-The canvas is done enough to demo. It runs the full demo script against a fake backend today.
-What's missing is the real orchestrator behind it. This doc covers what exists, what the
-canvas expects from you, and what's still open on both sides.
+**One-liner** (from [docs/CONCEPT.md](docs/CONCEPT.md)): *If AI understands what you want, why should you
+have to find the right app?* A blank canvas with one voice orb. You say what you're doing, an interface
+forms around it, and it goes away when you're done. A small local omni model (LFM3-Omni-2B) does the
+everyday work, and Claude handles hard requests and teaches the local model new widgets.
+
+---
+
+## 0. Status at a glance
+
+| Piece | State | Where |
+|---|---|---|
+| Concept, demo script, architecture | ✅ locked v1 | [docs/CONCEPT.md](docs/CONCEPT.md) |
+| Canvas ⇄ orchestrator contract | ✅ v1, + binary mic audio + dev `text` | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
+| Local model research (LFM3-Omni-2B on an 8 GB M2) | ✅ done, all limits measured | [prototype/README.md](prototype/README.md), [LFM3-Omni-2B-reference.md](LFM3-Omni-2B-reference.md) |
+| Session manager (context rotation, crash recovery, facts memory) | ✅ tested | [prototype/session_manager.py](prototype/session_manager.py) |
+| **Backend orchestrator** | ✅ **runs the cooking demo end to end on the real model** (via the test client) | [backend/](backend/README.md) |
+| Canvas UI | ✅ runs the full demo against the mock | [ui/](ui/README.md) |
+| Canvas ↔ real backend | ⚠️ connects, but the canvas doesn't stream mic audio yet | §6 |
+| Escalation to Claude | ❌ stub (placeholder widget) | [backend/escalate.py](backend/escalate.py) |
+| "Cloud teaches, local remembers" (saving Claude widgets) | ❌ not started | §6 |
+| Camera / vision in the app | ❌ backend has `see()`, canvas doesn't capture frames | §6 |
 
 ---
 
@@ -12,29 +30,62 @@ canvas expects from you, and what's still open on both sides.
 
 ```
 hackathon/
-├── HANDOFF.md              ← this file
+├── HANDOFF.md                  ← this file
+├── LFM3-Omni-2B-reference.md   model facts: capabilities, license, runtimes, output modes, tone
 ├── docs/
-│   ├── CONCEPT.md          product concept, demo script, architecture (locked v1)
-│   └── PROTOCOL.md         ★ the canvas ⇄ orchestrator message format. The contract.
-├── ui/                     ★ the canvas (Vite + React + TypeScript)
-│   ├── mock/server.mjs     fake orchestrator that replays the demo
-│   └── README.md           how to run it, file map
-├── prototype/              backend findings: LFM tests, session manager, router
-│   ├── README.md           all measured results and limits
-│   └── session_manager.py  realtime client with rotation + watchdog (use this)
-└── models/                 GGUF weights, NOT in git (download, see prototype/README.md)
+│   ├── CONCEPT.md              product concept, demo script, architecture (locked v1)
+│   └── PROTOCOL.md             ★ the canvas ⇄ orchestrator message format. The contract.
+├── ui/                         ★ the canvas (Vite + React + TypeScript)
+│   ├── mock/server.mjs         fake orchestrator that replays the demo
+│   └── README.md               how to run it, file map
+├── backend/                    ★ the real orchestrator (Python, websockets)
+│   ├── orchestrator.py         canvas WebSocket :8765/canvas → model turns → canvas messages
+│   ├── tools.py                model tools + tool call → canvas message mapping
+│   ├── escalate.py             Claude path (STUB, contract in its docstring)
+│   ├── test_client.py          fake canvas: plays the demo against the real model
+│   └── README.md               how a turn works, measured timings, known issues
+├── prototype/                  model research + the session manager
+│   ├── README.md               ★ every measured result and limit (read this before tuning anything)
+│   ├── session_manager.py      realtime client: context budget, rotation, facts memory, watchdog
+│   ├── router.py               output-mode trigger router + tone presets ("friendly" = Nova, default)
+│   ├── tests.py, tests_long.py, test_session.py   test suites
+│   ├── make_videos.py, make_examples.py → examples.html   test media + playable results page
+│   └── logs/                   results (*.jsonl); audio/video is gitignored, regenerate with the scripts
+└── models/                     GGUF weights, NOT in git (llama.cpp downloads them with -hf)
 ```
 
-## 2. Run the canvas
+## 2. Run it
+
+**Prerequisites:** macOS, `brew install llama.cpp` (needs ≥ build 11960, we use 0.9.0), Python 3.12 with
+`pip install -r backend/requirements.txt`, Node for the UI.
+
+**A. Canvas demo with the mock (no model needed):**
 
 ```bash
-cd ui
-npm install
-npm run demo
+cd ui && npm install && npm run demo
 ```
 
-Open http://localhost:5173. **Hold the orb (or Space) and let go** to play the next demo line.
-Add `?mute` to silence speech. Without a backend running, the orb dims and keeps retrying.
+Open http://localhost:5173. Hold the orb (or Space) and let go to play the next demo line.
+
+**B. Real model, no UI** (the quickest way to see the backend work):
+
+```bash
+llama serve -hf LiquidAI/LFM3-Omni-2B-GGUF:Q4_K_M --reasoning off --temp 0 --port 8080 -np 2 -c 16384
+```
+
+```bash
+ORCH_PORT=8766 python3 backend/orchestrator.py
+```
+
+```bash
+ORCH_PORT=8766 python3 backend/test_client.py
+```
+
+**C. Canvas + real backend:** start llama-server (as in B), then `python3 backend/orchestrator.py` (port
+8765), then `cd ui && npm run dev` (**not** `demo`, since the mock also takes 8765). It connects, but
+until the canvas streams mic audio (§6) nothing reaches the model from the UI.
+
+⚠️ **Always run llama-server with `-np 2 -c 16384` on the 8 GB Mac.** The defaults (4 slots × 32K) crashed the machine.
 
 ## 3. What the frontend decided (please keep these true)
 
@@ -42,9 +93,8 @@ These came out of the UI sessions with the product owner. Some of them constrain
 
 1. **It must never look like a chat app.** No transcript, no message bubbles, no "thinking…" text.
    The screen is one orb plus widgets. Nothing else.
-2. **Only tool calls reach the screen.** The orchestrator **drops all free text** from the model.
-   Anything the system says out loud goes through a `say` tool → `say` message. The canvas never
-   displays that text.
+2. **Only tool calls reach the screen.** The orchestrator never sends the model's free text to the
+   canvas. Anything the system says out loud arrives as a `say` message, and the canvas never displays that text.
 3. **The system speaks**, very briefly (1–6 words is typical: "Six it is. Timer's running.").
    The voice confirms what the screen already shows. It never reads the screen out.
 4. **One voice, always.** Even when Claude did the work, the local voice delivers the result.
@@ -56,92 +106,73 @@ These came out of the UI sessions with the product owner. Some of them constrain
 7. **The user can always interrupt.** Pressing the orb stops speech immediately and starts listening.
 8. Visual direction is Apple-native and restrained. Reference mockup:
    https://claude.ai/artifact/XYuV9Jgv9sxGxkt1mFk2Sy
+9. Default voice personality is the **"friendly" preset** (Nova, warm and casual) from `prototype/router.py`.
 
-## 4. What the backend needs to build
+## 4. What the local model can and can't do (summary of prototype/README.md)
 
-Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md). Short version:
-
-**Serve a WebSocket at `ws://localhost:8765/canvas`.** Stop the mock (`npm run dev` instead of
-`npm run demo`) and the canvas connects to you.
-
-### You send the canvas
-
-| message | when |
+| ✅ Works well | ⚠️ / ❌ Limits we designed around |
 |---|---|
-| `{type:"orb", state}` | `listening` on `orb_down`, `thinking` while LFM works, `working` during a Claude escalation, `idle` when done |
-| `{type:"say", text}` | Every spoken reply (from the model's `say` tool call) |
-| `{type:"create", id, widget, props, importance}` | `create_widget` tool call |
-| `{type:"update", id, props}` | `update_widget` tool call (props are merged) |
-| `{type:"remove", id}` / `{type:"clear"}` | `remove_widget` / `clear_canvas` |
-| `{type:"pending", id, importance}` | Right when escalation starts, so an empty card appears while Claude works. Send `create` with the same `id` when done. |
+| Tool calls from the demo lines: 8/8 correct, 1–2 s | **Plain text instead of `say`**: we speak its closing line |
+| Voice in → tool call (~2 s on short audio in isolation) | Voice turns in the orchestrator are slower (6–8 s), not profiled |
+| Transcription: 97.5–100% accurate on 12 s – 2.7 min of audio, ~9× real time | **Invents what it didn't hear** (said "apples, violin" for audio about neither) |
+| Speech out (text + speech mode): first sound 0.3–0.7 s, clean up to ~80 words / 30 s | Speech-only mode is broken. Long speech (>40 s) garbles. |
+| Reads screens and placards in images/video exactly | Full video is slow (11–19 s). Use one full-resolution frame (~2.8 s). Never downscale text. |
+| Point camera → spoken answer: first sound ~2 s | Realtime takes no images: frame → chat endpoint → description → realtime |
+| 100+ turn conversations with perfect recall | **8K context overflow crashes the whole server** → session manager rotates at ~6K (estimate over-counts ~30%, safe) |
+| Server memory flat at ~1.6–1.7 GB | Model mixes up "you"/"me" in follow-ups. Weak multi-step reasoning (2B). |
 
-### The canvas sends you
+## 5. The contract and the backend mapping
 
-| message | what to do |
-|---|---|
-| `hello {widgets}` | The widget types the canvas can draw. Put these (with their descriptions from PROTOCOL.md) in the local model's tool list. |
-| `orb_down` / `orb_up` | Start / end of the user's utterance (push-to-talk). Commit the audio buffer on `orb_up`. |
-| `event {id, name, data}` | Widget events like `item_checked`, `timer_done`. Feed them to the model as context, or handle them directly (e.g. `timer_done` → `say "Pasta's ready."`). |
-| `canvas_state {widgets}` | The current canvas after every change. **This is what the model sees as the canvas.** Include it (compact) in each turn. |
+Full spec: [docs/PROTOCOL.md](docs/PROTOCOL.md). The backend implements all of it.
 
-### Mapping the prototype's tools onto the protocol
-
-The prototype tests already use `create_widget`, `update_widget`, `remove_widget`, `clear_canvas`,
-`start_timer`, `escalate`. Suggested mapping:
-
-| tool call | canvas message |
+| model tool call | canvas message |
 |---|---|
 | `create_widget(id, widget, props, importance)` | `create` |
-| `update_widget(id, props)` | `update` |
+| `update_widget(id, props)` | `update` (props merged) |
 | `remove_widget(id)` / `clear_canvas()` | `remove` / `clear` |
 | `start_timer(minutes, label)` | `create` with `widget:"timer"`, `importance:"satellite"`, `props:{label, seconds}` |
-| `say(text)` | `say` |
-| `escalate(task)` | `pending` + `orb working`, then Claude's result as `create` (built-in type or `html`) |
+| `say(text)` **or the model's closing line** | `say` |
+| `escalate(task)` | `pending` + orb `working`, then Claude's result as `create` (built-in type or `html`) + `say` |
+| canvas `event timer_done` | `say "<label>'s done."` (no model call) |
 
-### Built-in widgets right now
-
-`recipe`, `checklist`, `timer`, `stacked_bar`, `html`. Props for each are in PROTOCOL.md.
-`html` is the slot for **Claude-generated widgets**: a full HTML document run in a sandboxed iframe
-(scripts only). It receives `{type:"props", data}` and can post back `{type:"emit", name, data}`.
-That's how "the cloud teaches, the local model remembers" gets onto the screen: Claude writes the
-HTML once, the backend saves it, and next time the local model just calls `create` with it.
-
-## 5. Things from the prototype that touch the UI
-
-From `prototype/README.md`, the ones that matter here:
-
-- **Use text + speech, never speech-only.** Good, since we drop the text anyway.
-- **Spoken replies degrade past ~80 words / 30 s.** Our replies are a few words, so fine.
-- **One tool call per turn:** "make it for six" updated only the recipe, not the ingredients.
-  Options: (a) the orchestrator fans one change out to linked widgets, (b) allow several
-  `update`s per turn, or (c) the canvas links widgets (ingredients read `servings` from the recipe).
-  **Needs a decision.** The canvas can do (c) if you prefer. Tell us.
-- **Realtime takes no images.** Vision goes frame → chat endpoint → description → realtime.
-  The canvas doesn't capture camera frames yet (see open items).
-- **Sessions must rotate before ~6K tokens** or llama-server crashes. `session_manager.py` handles it.
-  Keep `canvas_state` compact for this reason.
+Built-in widgets: `recipe`, `checklist`, `timer`, `stacked_bar`, `html`. `html` is the slot for
+**Claude-generated widgets**: a full HTML document run in a sandboxed iframe. It receives `{type:"props", data}`
+and can post back `{type:"emit", name, data}`. That's how "the cloud teaches, the local model remembers" gets
+onto the screen: Claude writes the HTML once, the backend saves it, and next time the local model calls `create` with it.
 
 ## 6. Open items
 
-**Frontend (us):**
-- [ ] Stream mic audio to the backend. Right now the mic only animates the orb. Proposed: PCM16 16 kHz
-      chunks as binary WebSocket frames between `orb_down` and `orb_up`. **Confirm the format you want.**
-- [ ] Play LFM's own audio instead of the browser voice. Proposed: `say` carries base64 PCM16 24 kHz
-      chunks, or binary frames. Only `ui/src/voice.ts` changes. **Confirm the format.**
-- [ ] Camera: capture one full-resolution frame on request (`{type:"capture"}` → JPEG back).
+**Frontend:**
+- [ ] **Stream mic audio to the backend.** Format agreed and implemented on the backend side: raw PCM16
+      16 kHz mono as binary WebSocket frames between `orb_down` and `orb_up` (PROTOCOL.md). Right now the mic only animates the orb.
+- [ ] Play LFM's own audio instead of the browser voice (optional; only `ui/src/voice.ts` changes). Format not decided yet.
+- [ ] Camera: capture one full-resolution frame on request (`{type:"capture"}` → JPEG back). Backend has `SessionManager.see()` ready.
 - [ ] Vision demo scene in the mock.
+- [ ] Linked widgets decision: the model updated only `servings` on "make it for six". Canvas-side linking (ingredients read `servings` from the recipe) is the most reliable fix.
 
-**Backend (you):**
-- [ ] Orchestrator WebSocket at `:8765/canvas` speaking PROTOCOL.md
-- [ ] Drop model free text. Speech only via `say`.
-- [ ] Map tool calls → canvas messages (table above)
-- [ ] Escalation path: `pending` → Claude → `create`. Save generated widgets so the local model can reuse them.
-- [ ] Decide on linked widgets (section 5)
+**Backend:**
+- [x] Orchestrator WebSocket at `:8765/canvas` speaking PROTOCOL.md
+- [x] Free text never on screen; speech only as `say`
+- [x] Tool calls → canvas messages, multi-step tool loop
+- [x] Session rotation + server crash recovery (session manager)
+- [ ] **Escalation for real:** call Claude in `backend/escalate.py` (contract in its docstring), return a built-in widget or `html`
+- [ ] **Save Claude-built widgets** (e.g. `backend/learned/`) and add them to the local model's widget list. That's the core of the pitch.
+- [ ] Shorter spoken lines (prompt tuning; target 1–6 words, currently ~4–8)
+- [ ] Profile and speed up voice turns (6–8 s vs 2–3 s for text)
+- [ ] Barge-in: `orb_down` during a turn should cancel it (`response.cancel` in the session manager)
+- [ ] Vision path: `capture` → `see()` once the canvas can send frames
 
 **Both:**
-- [ ] Agree on the audio formats above before building them.
+- [ ] Decide on linked widgets (above).
+- [ ] Run the full demo through the canvas with real mic input once streaming lands.
 
 ## 7. How to change the contract
 
 PROTOCOL.md is the single source of truth. If you need a new message or field, change PROTOCOL.md
 in the same commit as the code, and add it to `ui/mock/server.mjs` if the demo should use it.
+
+## 8. Git
+
+The whole repo is in git (`main`). Not committed: model weights (`models/`, `*.gguf`), `node_modules/`,
+generated test media (`prototype/videos/`, `prototype/logs/*.wav` etc.; regenerate with
+`prototype/make_videos.py` and the test scripts), local server logs, `.env`.

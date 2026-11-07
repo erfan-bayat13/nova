@@ -34,6 +34,11 @@ orchestrator drops it, and anything the system says out loud arrives as a `say` 
 | `orb_up` | – | The user lets go. End of the utterance. |
 | `event` | `id`, `name`, `data` | A widget event, e.g. `item_checked`, `timer_done` |
 | `canvas_state` | `widgets`: `[{id, widget, props}]` | After any change (debounced 200 ms). This is what the model sees as the current canvas. |
+| *(binary frame)* | raw **PCM16, 16 kHz, mono**, little-endian | Mic audio, sent only between `orb_down` and `orb_up`. Any chunk size works (100 ms = 3,200 bytes is a good default). The orchestrator buffers it and sends the whole utterance to the model on `orb_up`. Taps under 0.3 s are ignored. *(Implemented in `backend/orchestrator.py`; the canvas doesn't stream yet.)* |
+| `text` | `text` | **Dev/testing only.** Acts as if the user said `text`. Used by `backend/test_client.py`. The real canvas never sends it. |
+
+Speech out is still the `say` text, spoken by the browser voice. Streaming LFM's own 24 kHz audio is a
+possible later change. It would add a message without changing `say`.
 
 ## Built-in widgets
 
