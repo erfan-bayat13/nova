@@ -1,0 +1,22 @@
+# model weights (download them, see prototype/README.md)
+models/
+*.gguf
+
+# dependencies and builds
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+
+# generated test media (rebuild with make_videos.py / tests.py)
+prototype/videos/
+prototype/logs/long/
+prototype/logs/*.wav
+prototype/logs/*.bin
+prototype/logs/*.mp4
+
+# secrets and OS files
+.env
+.env.*
+.DS_Store

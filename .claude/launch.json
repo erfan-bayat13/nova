@@ -1,0 +1,30 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "examples",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8090",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "prototype"
+      ],
+      "port": 8090
+    },
+    {
+      "name": "canvas",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "ui",
+        "run",
+        "demo"
+      ],
+      "port": 5173
+    }
+  ]
+}

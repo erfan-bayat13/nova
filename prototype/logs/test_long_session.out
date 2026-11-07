@@ -1,0 +1,11 @@
+
+== Real budget (rotate_at=6000), 160 mixed turns: must not crash
+  turn  20: recall 3/3, est  1636 tok, rotations 0, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you're allergic to peanuts."
+  turn  40: recall 3/3, est  3077 tok, rotations 0, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you're allergic to peanuts."
+  turn  60: recall 3/3, est  4509 tok, rotations 0, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you're allergic to peanuts."
+  turn  80: recall 3/3, est   708 tok, rotations 1, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts."
+  turn 100: recall 3/3, est  2188 tok, rotations 1, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts."
+  turn 120: recall 3/3, est  3613 tok, rotations 1, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts."
+  turn 140: recall 3/3, est  5067 tok, rotations 1, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts."
+  turn 160: recall 3/3, est  1509 tok, rotations 2, recoveries 0  "Your name is Sam, your dog's name is Biscuit, and you are allergic to peanuts."
+  321s, worst recall 3/3, rotations 2 (cost [6.9, 7.5] s), recoveries 0, server restarts 0, memory free 25%
