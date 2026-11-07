@@ -1,0 +1,102 @@
+/* Built-in widgets: note, stat, list, table, progress, counter (+ the dev gallery).
+   Same material, type scale and system colors as styles.css, which owns the tokens and the .w card. */
+
+/* note. (This file loads before styles.css, so rules that must beat .w use .w.w-x or .w .x.) */
+.w .nt-title { margin-bottom: 8px; }
+.nt-body p { margin: 0; font-size: 17px; line-height: 1.47; max-width: 60ch; }
+.nt-body p + p { margin-top: 2px; }
+.nt-gap { height: .7em; }
+
+/* stat, progress, counter: small cards. They adapt to their width, so the same component reads as a
+   170 x 72 chip beside the orb (satellite) and as a larger card (side / hero). */
+.w.w-stat, .w.w-progress, .w.w-counter { padding: 14px 18px; border-radius: 22px; overflow: hidden; }
+.w-stat .inner, .w-progress .inner, .w-counter .inner { container-type: inline-size; display: flex; flex-direction: column; justify-content: center; }
+.st, .pg, .ct { display: grid; align-items: baseline; padding: 4px 4px 2px; }
+.st .cap, .pg .cap, .ct .cap { grid-area: lab; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-val, .pg-val, .ct-val { font-weight: 300; letter-spacing: -.03em; line-height: 1.05; overflow-wrap: anywhere; }
+.st-val small, .pg-val small { font-size: 17px; font-weight: 500; color: var(--label2); letter-spacing: 0; margin-left: 5px; }
+
+/* stat */
+.st { grid-template-columns: minmax(0, auto) minmax(0, 1fr); grid-template-areas: "lab lab" "val del" "cap cap"; column-gap: 10px; }
+.st-val { grid-area: val; font-size: clamp(36px, 12cqi, 56px); }
+.st-val.txt { font-size: clamp(24px, 8cqi, 34px); font-weight: 500; letter-spacing: -.02em; }
+.st-del { grid-area: del; justify-self: start; font-size: 13px; font-weight: 600; color: var(--label2); font-variant-numeric: tabular-nums;
+  padding: 2px 8px; border-radius: 999px; background: rgba(235, 235, 245, .1); }
+.st-cap { grid-area: cap; font-size: 13px; line-height: 1.38; color: var(--label2); margin-top: 8px; }
+
+/* progress */
+.pg { grid-template-columns: minmax(0, 1fr); grid-template-areas: "lab" "val" "bar"; }
+.pg-val { grid-area: val; font-size: clamp(34px, 10cqi, 48px); margin-bottom: 14px; }
+.pg-val small.pc { margin-left: 1px; }
+.pg-bar { grid-area: bar; height: 8px; border-radius: 99px; overflow: hidden; background: rgba(255, 159, 10, .22); }
+.pg-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--orange); transition: width .9s var(--ease); }
+
+/* counter */
+.ct { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "lab lab lab" "val min plu"; column-gap: 10px; align-items: center; }
+.ct-val { grid-area: val; font-size: clamp(40px, 12cqi, 56px); }
+.ct-btn { all: unset; box-sizing: border-box; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; cursor: pointer;
+  background: rgba(120, 120, 128, .24); transition: background .2s ease, transform .2s var(--ease); }
+.ct-btn:hover { background: rgba(120, 120, 128, .36); }
+.ct-btn:active { transform: scale(.9); }
+.ct-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.ct-btn svg { width: 16px; height: 16px; fill: none; stroke: var(--label); stroke-width: 2; stroke-linecap: round; }
+.ct-btn.minus { grid-area: min; }
+.ct-btn.plus { grid-area: plu; }
+
+/* the 170 px satellite chip: 44 px of room, so one tight row of type and no caption */
+@container (max-width: 220px) {
+  .st, .pg, .ct { padding: 0; }
+  .st .cap, .pg .cap, .ct .cap { font-size: 11px; line-height: 1.2; margin: 0; }
+  .st-val small, .pg-val small { font-size: 11px; margin-left: 3px; }
+
+  .st { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "lab del" "val val"; column-gap: 6px; }
+  .st-val { font-size: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .st-val.txt { font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+  .st-del { padding: 0; background: none; font-size: 11px; }
+  .st-cap { display: none; }
+
+  .pg { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "lab val" "bar bar"; column-gap: 8px; }
+  .pg-val { font-size: 12px; font-weight: 600; letter-spacing: 0; margin: 0; white-space: nowrap; }
+  .pg-val small { font-weight: 500; }
+  .pg-bar { height: 5px; margin-top: 7px; }
+
+  .ct { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "lab lab lab" "min val plu"; column-gap: 6px; }
+  .ct .cap { margin-bottom: 3px; }
+  .ct-val { font-size: 22px; text-align: center; white-space: nowrap; }
+  .ct-btn { width: 26px; height: 26px; }
+  .ct-btn svg { width: 12px; height: 12px; }
+}
+
+/* list */
+.w-list .cap { margin-bottom: 4px; }
+.w-table .cap { margin-bottom: 10px; }
+.ls { margin: 0; padding: 0; list-style: none; counter-reset: l; }
+.ls li { counter-increment: l; display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; font-size: 15px; line-height: 1.47; padding: 8px 0; max-width: 60ch; }
+.ls li + li { border-top: .5px solid var(--sep); }
+.ls.ordered li::before { content: counter(l); color: var(--label3); font-variant-numeric: tabular-nums; font-weight: 500; }
+.ls.bulleted li::before { content: ""; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: var(--gray); align-self: center; }
+
+/* table (the card scrolls when there are more rows than fit) */
+.tb { width: 100%; border-collapse: collapse; font-size: 15px; font-variant-numeric: tabular-nums; }
+.tb th { text-align: left; font-size: 12px; font-weight: 600; color: var(--label2); padding: 2px 12px 8px 0; border-bottom: .5px solid var(--sep); white-space: nowrap; }
+.tb td { padding: 8px 12px 8px 0; vertical-align: baseline; overflow-wrap: anywhere; }
+.tb tbody tr + tr td { border-top: .5px solid var(--sep); }
+.tb td:first-child { font-weight: 500; }
+.tb th:last-child, .tb td:last-child { padding-right: 0; }
+.tb .r { text-align: right; }
+.tb td.r { font-weight: 400; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-bar i, .ct-btn { transition-duration: .01s; }
+}
+
+/* ?gallery: every widget type once, for checking the design in a browser */
+.gallery { height: 100%; overflow: auto; padding: 28px 32px 48px; }
+.gallery h1 { font-size: 13px; font-weight: 600; color: var(--label2); letter-spacing: 0; margin: 0 0 16px; }
+.gallery .g-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 28px 16px; align-items: start; }
+.gallery .g-tag { font-size: 11px; font-weight: 500; color: var(--label3); margin: 0 0 6px 6px; }
+.gallery .g-wide { grid-column: span 2; }
+.gallery .g-short .w { max-height: 330px; }
+.gallery .g-chips { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 28px; }
+.gallery .w { position: relative; }
+.gallery .g-chips .w { width: 170px; height: 72px; flex: none; }

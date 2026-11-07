@@ -9,6 +9,42 @@ everyday work, and Claude handles hard requests and teaches the local model new 
 
 ---
 
+## ▶ Latest-latest (2026-11-07, evening): creator mode (talk, and a canvas opens)
+
+Committed on `voice-orb` (`e5ca536` … `78f3063`). Design is in the PROTOCOL.md "Creator mode" paragraph.
+
+**How it works:** you ask ("I'm cooking pasta for four", "start a ten minute timer", "make it for six", "I'm done"). Nova answers with a
+fixed spoken line (taught by examples in `VOICE_SYSTEM`): "Okay, putting that on the canvas." / "Okay, clearing the canvas." The orchestrator
+(`maybe_build` → `Connection.build`) then takes the transcript the session already makes (`sm.last_user_text()`), and runs the **builder**
+(`backend/builder.py`): a tool-calling turn on llama-server's chat endpoint with the system prompt, worked examples as real message history, and the
+canvas state. It sends `create/update/remove/clear` as calls are made; a failed call gets one follow-up so the model can fix it. `escalate` goes to
+real Claude (`backend/escalate.py`, needs `ANTHROPIC_API_KEY`; new html widgets are saved in `backend/learned/` and become `learned_<name>` types
+the local model can create itself). Six new widgets: note, stat, list, table, progress, counter (`?gallery` shows all). The orb page opens a canvas:
+the window grows to the work area, widgets float out of the orb, the orb docks at the bottom, click-through except over widgets/orb, "Clear canvas" in
+the menus. Announcements (timer done, cloud result) are spoken by Nova (`Connection.say`), not the browser voice.
+
+**Tested:** text turns on the real model (pasta, update to six, timer, clear, progress, escalation against a mock Claude server); escalation 13/13 on a mock
+server; the orb page against the mock in a browser with a faked shell. The real Electron path by synthetic hotkey and `say` through the speakers worked
+once (the orb heard it, Nova answered, a build started).
+
+**⚠️ Open, important:**
+- **llama-server hang: fixed and verified.** It hung once when the builder ran its own ASR at the same time as the session's after-reply ASR (two audio
+  requests at once: both slots busy, ~0 % CPU). The builder now waits for the session's own transcript (`sm.last_user_text()`). After a restart the full
+  spoken suite ran clean. Rules that remain: one orchestrator only, never two audio chat requests at once.
+- **Verified by voice:** `python3 backend/creator_client.py` (orb app quit, one orchestrator) speaks pasta → "make it for six" → timer → chat → "I'm done" through
+  the real voice path (real ASR, real builder). Recipe + ingredients appear, six rescales them (`builder.servings_fix`, because the 2B often resends the old
+  numbers), the timer starts, chat builds nothing, "I'm done" clears (`CLEAR_RE`, no model call).
+- Builder lessons: examples sent as chat history work, but an example that EQUALS a likely request makes the model say it's already done (prose);
+  keep examples about other things (banana bread, 25-minute timer). Spoken number words become digits first (`builder.digits`).
+- Real Electron: the actual window resize, click-through while unfocused, first click on a widget, focus stealing, full-screen apps and multiple
+  displays are untested (the page logic was only checked in a browser). `ORB_PANEL=1` is an untested non-activating-panel option.
+- Hold-to-talk by synthetic ⌥ key events isn't seen by the key hook; use ⌥Space (hands-free toggle) for scripted tests.
+- Builds take 4–20 s (swap was 4 GB of 5 GB used). The 2B is flaky on some phrasings (e.g. updates a widget that doesn't exist; "thanks, that's all" didn't clear).
+- No real Claude call has been made (no key in this environment). The widget `html` contract and validation are covered by mock tests only.
+- Voice-mode `hello` still sends `widgets: []` (the builder then offers every type). The mic stays open after first use (older bug, not touched).
+
+---
+
 ## ▶ Latest (2026-11-07, afternoon): Nova can see, and asks before looking
 
 Code is committed on `voice-orb` (last: `0f45915`). Idea doc: [docs/IDEA-vision-and-background-agents.md](docs/IDEA-vision-and-background-agents.md).

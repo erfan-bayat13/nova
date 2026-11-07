@@ -126,6 +126,7 @@ export function useCanvas(url: string, mode: Mode = 'canvas', onLook?: (source: 
   const emit = useCallback((id: string, name: string, data?: unknown) => send({ type: 'event', id, name, data }), [send]);
   const localUpdate = useCallback((id: string, props: Props) => dispatch({ type: 'local', id, props }), []);
   const gone = useCallback((id: string) => dispatch({ type: 'gone', id }), []);
+  const clear = useCallback(() => dispatch({ type: 'clear' }), []); // dissolve everything now (the desktop menu's "Clear canvas")
 
-  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, orbCancel, sendAudio, see, emit, localUpdate, gone };
+  return { widgets, orb: speaking ? ('speaking' as const) : orb, connected, orbDown, orbUp, orbCancel, sendAudio, see, emit, localUpdate, gone, clear };
 }

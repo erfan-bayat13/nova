@@ -4,6 +4,15 @@
 // key hook, uiohook-napi, which needs the Accessibility permission). ⌥Space is a press/press-again fallback.
 // The page hides the window again a few seconds after the reply. A menu-bar dot shows it's running.
 //
+// Creator mode (canvas): when the orchestrator builds widgets, the page asks for window.orbShell.setCanvas(true).
+// The window then grows, instantly, to the work area of the display it is on (same transparent, frameless,
+// always-on-top, content-protected window; the page animates the orb and the widgets), and the page draws the
+// widgets floating with the orb docked at the bottom centre. While it is open the window ignores the mouse
+// everywhere except over a widget or the orb (setIgnoreMouseEvents with forward: the page watches the pointer
+// and calls setInteractive), the orb can't be dragged, and the page never hides it. When the last widget is
+// gone the page calls setCanvas(false) and the window goes back to exactly its saved bounds. "Clear canvas" in
+// the menu asks the page to dissolve all widgets: the manual way out.
+//
 //   npm start      build ui/ and open the orb (starts the orchestrator if nothing listens on ORCH_PORT)
 //   npm run dev    load the orb from the Vite dev server instead (cd ui && npm run dev)
 //
@@ -11,6 +20,8 @@
 //      ORB_CAMERA_HOTKEY (Alt+Shift+C), ORB_SCREEN_HOTKEY (Alt+Shift+S), ORB_AREA_HOTKEY (Alt+Shift+A, drag a
 //      rectangle): "eyes on request", one frame to the model.
 //      ORB_URL (load the page from here, e.g. http://localhost:5173/?handsfree), ORB_PYTHON (python3)
+//      ORB_PANEL=1 (macOS: make the window a non-activating panel, so clicking a widget doesn't take keyboard
+//      focus from the app you're in; off by default until it's been tried by hand)
 
 const { app, BrowserWindow, desktopCapturer, globalShortcut, ipcMain, Menu, nativeImage, screen, session, systemPreferences, Tray } = require('electron');
 const { spawn } = require('child_process');
@@ -35,6 +46,8 @@ const AREA_MIN_DIP = 24;                // a drag smaller than this counts as a 
 let win = null;
 let backend = null; // the orchestrator, only if we started it
 let tray = null;
+let savedBounds = null; // creator mode: the orb's own bounds while the window is grown to the work area (null = small orb)
+let interactive = true; // creator mode: false = clicks pass through the window to the apps below
 
 function portOpen(port) {
   return new Promise((resolve) => {
@@ -66,6 +79,8 @@ function createWindow() {
     frame: false, transparent: true, hasShadow: false, resizable: false, maximizable: false,
     fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, show: false,
     backgroundColor: '#00000000',
+    acceptFirstMouse: true, // the first click on a widget (or the orb) counts, it isn't spent on focusing the window
+    ...(process.env.ORB_PANEL === '1' && process.platform === 'darwin' ? { type: 'panel' } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       backgroundThrottling: false,                  // keep playing and animating when not focused
@@ -85,13 +100,51 @@ function createWindow() {
   } else {
     win.loadFile(path.join(ROOT, 'ui', 'dist', 'index.html'), { query: { orb: '1', ws } });
   }
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; savedBounds = null; });
+  // a reload starts the page from nothing (no widgets): put the window back too
+  win.webContents.on('did-start-loading', () => { if (savedBounds) setCanvas(false); });
   // the page's [look] / [timing] logs show up in this terminal too (no need to open DevTools)
   win.webContents.on('console-message', (e, _level, message) => {
     const msg = typeof message === 'string' ? message : e.message;
     if (msg && /^\[(look|timing)\]/.test(msg)) console.log(msg);
   });
 }
+
+// Creator mode: grow the window to the work area of the display it is on (instantly: the page animates the orb and
+// the widgets), or put it back exactly as it was. Returns where the small window was, in the grown window's own
+// coordinates, so the page can start the orb from where it was on screen.
+const overlaps = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+
+function setCanvas(open) {
+  if (!win) return null;
+  if (!open) {
+    if (!savedBounds) return null;
+    let back = savedBounds;
+    if (!screen.getAllDisplays().some((d) => overlaps(d.workArea, back))) { // its screen was unplugged meanwhile
+      const { workArea } = screen.getPrimaryDisplay();
+      back = { x: workArea.x + workArea.width - SIZE - MARGIN, y: workArea.y + workArea.height - SIZE - MARGIN, width: SIZE, height: SIZE };
+    }
+    savedBounds = null;
+    interactive = true;
+    win.setIgnoreMouseEvents(false);
+    win.setBounds(back);
+    console.log('[canvas] closed');
+    return { size: { w: back.width, h: back.height } };
+  }
+  const small = savedBounds ?? (savedBounds = win.getBounds());
+  const { workArea } = screen.getDisplayMatching(small);
+  interactive = false; // nothing is under the pointer yet: the page says when something is
+  win.setIgnoreMouseEvents(true, { forward: true });
+  win.setBounds(workArea); // setBounds, not animated: a frame animation would make the page re-layout every frame
+  console.log(`[canvas] open ${workArea.width}x${workArea.height}`);
+  if (!win.isVisible()) win.showInactive();
+  return {
+    size: { w: workArea.width, h: workArea.height },
+    from: { x: small.x - workArea.x, y: small.y - workArea.y, w: small.width, h: small.height },
+  };
+}
+
+const clearCanvas = () => win?.webContents.send('clear-canvas'); // the page dissolves every widget, then closes the canvas
 
 const pttLabel = () => PTT_KEY.replace('AltRight', 'right ⌥').replace('MetaRight', 'right ⌘').replace('CtrlRight', 'right ⌃');
 const keyLabel = (k) => k.replace('Alt', '⌥').replace('CommandOrControl', '⌘').replace('Shift', '⇧').replace(/\+/g, '');
@@ -236,6 +289,8 @@ function menuItems() {
     { label: `Talk  ${hotkeyLabel()}`, click: talk },
     ...lookItems(),
     { type: 'separator' },
+    { label: 'Clear canvas', click: clearCanvas },
+    { type: 'separator' },
     { label: 'Reload', click: () => win?.reload() },
     { label: 'Open DevTools', click: () => win?.webContents.openDevTools({ mode: 'detach' }) },
     { type: 'separator' },
@@ -249,6 +304,8 @@ function showMenu() {
     { label: `Hold ${pttLabel()} (or the orb) to talk`, enabled: false },
     { type: 'separator' },
     ...lookItems(),
+    { type: 'separator' },
+    { label: 'Clear canvas', click: clearCanvas },
     { type: 'separator' },
     { label: 'Reload', click: () => win.reload() },
     { label: 'Open DevTools', click: () => win.webContents.openDevTools({ mode: 'detach' }) },
@@ -266,12 +323,18 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.on('move', (_e, dx, dy) => {
-    if (!win) return;
+    if (!win || savedBounds) return; // no dragging while the canvas is open
     const [x, y] = win.getPosition();
     win.setPosition(Math.round(x + dx), Math.round(y + dy));
   });
   ipcMain.on('menu', showMenu);
-  ipcMain.on('hide', () => win?.hide());
+  ipcMain.on('hide', () => { if (!savedBounds) win?.hide(); }); // never while the canvas is open
+  ipcMain.handle('canvas', (_e, open) => setCanvas(!!open));
+  ipcMain.on('interactive', (_e, on) => { // the page: pointer is over a widget or the orb (true) or over nothing (false)
+    if (!win || !savedBounds || interactive === !!on) return;
+    interactive = !!on;
+    win.setIgnoreMouseEvents(!interactive, { forward: true });
+  });
   ipcMain.handle('media-access', (_e, kind) => mediaAccess(kind));
   ipcMain.handle('capture-screen', () => captureScreen());
   ipcMain.handle('capture-area', () => captureArea());

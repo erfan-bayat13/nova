@@ -1,3 +1,4 @@
 websockets>=15.0
 numpy>=1.26
 # optional, better retrieval: sentence-transformers (or a llama.cpp --embeddings server, see backend/embed.py)
+httpx
