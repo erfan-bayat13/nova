@@ -13,6 +13,7 @@ html, body, #root { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--label); font-family: var(--sf); -webkit-font-smoothing: antialiased; overflow: hidden; letter-spacing: -.01em; user-select: none; -webkit-user-select: none; }
 .stage { position: relative; height: 100%; overflow: hidden; }
 .orb { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+.orb.hold { opacity: 0; } /* the desktop window is being resized: no orb in the wrong place for a frame */
 .orb-note { position: absolute; left: 0; right: 0; text-align: center; font: 500 10px/1 var(--sf); color: var(--label2); pointer-events: none; white-space: nowrap; }
 
 /* widget cards: system material */
@@ -89,3 +90,5 @@ body { background: var(--bg); color: var(--label); font-family: var(--sf); -webk
 
 /* ?orb: the floating desktop orb window is transparent around the sphere */
 html.orb-only, html.orb-only body { background: transparent; }
+/* ?orb with widgets: the window is transparent, so there is nothing behind a card to blur. A near-solid card reads on any desktop (and skips a blur over the whole screen). */
+html.orb-only .w { background: rgba(28, 28, 30, .94); -webkit-backdrop-filter: none; backdrop-filter: none; }

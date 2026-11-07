@@ -38,7 +38,7 @@ isn't running, but starting it yourself first is quicker to debug. macOS asks fo
 | ⌥ + another key | Cancelled. That was a shortcut or a special character, not a question. |
 | **⌥⇧C** / **⌥⇧S** / **⌥⇧A**, or the menu-bar / orb menu | Nova looks: one frame from the camera / of the screen under the cursor / of a rectangle you drag on a frozen still of the screen (⌥⇧A, Esc cancels; fastest, since less of the picture is processed), sent once and dropped. A ring shows while it's captured. Holding the orb cancels a capture that hasn't gone yet. |
 | Drag the orb | Moves it. |
-| Right-click the orb, or the menu-bar dot | Reload, DevTools, Quit. There's no Dock icon. |
+| Right-click the orb, or the menu-bar dot | Clear canvas, Reload, DevTools, Quit. There's no Dock icon. |
 
 **First run:** macOS asks for **Accessibility** for "Electron" (that's how it sees Right ⌥ being held and
 released while you're in other apps). Allow it under System Settings → Privacy & Security → Accessibility.
@@ -53,7 +53,7 @@ own playground (playground.liquid.ai/talk) works the same way: hold, stream, rel
 **Settings** (`ORB_URL`, e.g. `http://localhost:5173/?linger=4`): `?linger=4` (seconds the orb stays after
 a reply), `?mic_warm=30` (seconds the mic stays open after use, so the next press has no startup lag;
 the macOS mic indicator stays on that long), `?handsfree` (the hands-free mode instead of hold, see below).
-Env: `ORB_PTT_KEY` (a uiohook key name, e.g. `MetaRight`, `CtrlRight`), `ORB_HOTKEY`, `ORCH_PORT`, `ORB_PYTHON`.
+Env: `ORB_PTT_KEY` (a uiohook key name, e.g. `MetaRight`, `CtrlRight`), `ORB_HOTKEY`, `ORCH_PORT`, `ORB_PYTHON`, `ORB_PANEL`.
 
 The orb dims while the backend is unreachable.
 
@@ -65,17 +65,37 @@ fades after 15 s of quiet. llama-server's realtime API ignores `turn_detection` 
 back `null`, no speech events), so this runs on the client. Slower (the 0.8 s pause comes first) and untuned
 for real rooms. Tuning: `?pause=0.8`, `?idle=15`, `?barge=0`, `?barge_rms=1500`.
 
+### Creator mode (canvas)
+
+Ask for something ("I'm cooking pasta for four", "start a ten minute timer") and the orchestrator builds widgets
+(the canvas messages of `docs/PROTOCOL.md`, on the same socket). The orb then opens a canvas: the window grows to the
+work area of the display it is on, the orb glides to the bottom centre, and the widgets grow out of it and float
+over your desktop, laid out by `ui/src/layout.ts` like the canvas page. Hold the orb or Right ⌥ as usual to talk,
+interrupt or ask for changes. The window doesn't fade away while widgets exist. When the last one is gone ("I'm
+done") they dissolve into the orb, it glides back to its corner and the window shrinks to exactly where it was.
+
+- **Click-through:** while the canvas is open the window ignores the mouse everywhere except over a widget or the orb
+  (`setIgnoreMouseEvents(true, {forward: true})`; the page watches the pointer and calls `orbShell.setInteractive`).
+  Checklist items, the timer and the orb are clickable, the rest of your desktop is too. The orb can't be dragged
+  while it is open.
+- **Manual way out:** menu-bar dot or right-click the orb, **Clear canvas** (dissolves every widget, closes the canvas).
+- Keyboard focus: the window is shown without activating it. Clicking a widget may still make Electron the active
+  app; `ORB_PANEL=1` (macOS) makes it a non-activating panel instead. Untested, off by default.
+
+The page side (phases, layout, glide, click-through logic) was tried in a browser against `ui/mock` with a faked
+`orbShell`. The real window resize, `setIgnoreMouseEvents` forwarding and focus behaviour are not tested in Electron yet.
+
 ## Files
 
 | File | What |
 |---|---|
 | `main.cjs` | The window (transparent, frameless, always on top, all Spaces), global hotkey, starts the orchestrator if needed |
-| `preload.cjs` | `window.orbShell`: `moveBy`, `menu`, `hide`, `onHotkey`, `onPtt`. The only bridge to the page |
+| `preload.cjs` | `window.orbShell`: `moveBy`, `menu`, `hide`, `onHotkey`, `onPtt`, `onLook`, the capture calls, and for the canvas `setCanvas(open)`, `setInteractive(on)`, `onClearCanvas`. The only bridge to the page |
 | `trayTemplate*.png` | The menu-bar dot |
 
 The page is `ui/` with `?orb`: `ui/src/OrbApp.tsx` (the orb window, push to talk), `ui/src/conversation.ts`
 (hands-free mode), `ui/src/voice.ts` (streamed 24 kHz playback, interrupt), `ui/src/Orb.tsx`
-(appears/fades, pulses with the real voice).
+(appears/fades, pulses with the real voice). With widgets, `OrbApp.tsx` also draws the canvas (`WidgetFrame`, `widgets/`).
 
 Tested 2026-11-07 with `backend/voice_client.py` (a clip streamed in real time as if held): release → first
 sound 0.25–0.30 s over 6 turns; holding during a reply cut it off and answered the new question in 0.30 s;

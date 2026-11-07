@@ -18,6 +18,10 @@ type Props = {
   onMenu?: () => void;
   present?: boolean; // false: the orb shrinks away (desktop orb between conversations)
   seeing?: boolean; // a frame is being captured for "eyes on request": a thin ring around the orb
+  // The desktop window just changed size (canvas opens or closes): when this object changes, the orb jumps to it
+  // instead of gliding from where it was, so it stays where it was on screen. `hold` hides the orb until then.
+  from?: OrbSpot;
+  hold?: boolean;
 };
 
 const DRAG_PX = 6;
@@ -30,6 +34,7 @@ export function Orb(p: Props) {
   const live = useRef(p);
   live.current = p;
   const pos = useRef({ x: 0, y: 0, r: 0 });
+  const jumped = useRef<OrbSpot | undefined>(undefined);
   const holding = useRef(false);
   const drag = useRef<{ x: number; y: number; on: boolean } | null>(null);
 
@@ -51,9 +56,10 @@ export function Orb(p: Props) {
 
     const frame = (now: number) => {
       const dt = Math.min(0.05, (now - last) / 1000); last = now; o.t += dt;
-      const { spot, state, connected, tintWork, micLevel, speechLevel } = live.current;
+      const { spot, state, connected, tintWork, micLevel, speechLevel, from } = live.current;
       const P = pos.current;
       if (!P.r) Object.assign(P, spot);
+      if (from && from !== jumped.current) { jumped.current = from; Object.assign(P, from); }
       const k = 1 - Math.pow(0.012, dt);
       P.x += (spot.x - P.x) * k; P.y += (spot.y - P.y) * k; P.r += (spot.r - P.r) * k;
 
@@ -92,7 +98,7 @@ export function Orb(p: Props) {
   return (
     <canvas
       ref={cv}
-      className="orb"
+      className={p.hold ? 'orb hold' : 'orb'}
       role="button"
       aria-label="Hold to talk"
       onPointerDown={(e) => {
