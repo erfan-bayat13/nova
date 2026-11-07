@@ -33,8 +33,10 @@ from websockets.asyncio.server import serve
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "prototype"))  # session_manager.py lives with its tests
 
-from session_manager import SessionManager, ServerWatchdog  # noqa: E402
+from session_manager import SessionManager, ServerWatchdog, _post, clean, transcribe  # noqa: E402
 from escalate import escalate  # noqa: E402
+import builder  # noqa: E402
+import tools as tools_mod  # noqa: E402
 from tools import tool_defs, to_canvas, widget_docs_text  # noqa: E402
 
 PORT = int(os.environ.get("ORCH_PORT", 8765))
@@ -94,7 +96,28 @@ You: Okay, looking at your screen now.
 User: Look at my screen.
 You: Want me to take a look at your screen?
 User: No.
-You: No problem, I won't look."""
+You: No problem, I won't look.
+
+You can also build things on a canvas that floats on their screen: recipes, checklists, timers, lists, notes, numbers, tables, charts, plans. A note in parentheses starting "(On the canvas now" lists what is already there; never read it out loud.
+When they ask you to make, show, start, track, plan, add, change or remove something on the canvas, or they say what they are doing and a canvas would help (cooking, a timer, a list), reply with exactly this line and nothing else: "Okay, putting that on the canvas." When they say they are done or ask you to clear it, reply with exactly: "Okay, clearing the canvas." For plain questions and chat, just answer. Examples:
+User: I'm cooking pasta for four.
+You: Okay, putting that on the canvas.
+User: Start a ten minute timer.
+You: Okay, putting that on the canvas.
+User: Make it for six.
+You: Okay, putting that on the canvas.
+User: Make me a packing list for a beach trip.
+You: Okay, putting that on the canvas.
+User: I'm done, thanks.
+You: Okay, clearing the canvas.
+User: How long does pasta take to cook?
+You: About ten minutes for most pasta, until it's tender but still has a bite.
+User: What's a good name for a cat?
+You: How about Mochi or Luna?"""
+# After a voice reply: this spoken line (taught in VOICE_SYSTEM) means "build it". The builder (Connection.build) then
+# turns the user's last request into canvas tool calls on the chat endpoint, while Nova has already answered.
+BUILD_NOW_RE = re.compile(r"\b(putting|adding|setting up|updating|changing|clearing|removing)\b[^.?!]*\bcanvas\b", re.I)
+BUILD_STEPS = 3     # model calls per build: a follow-up only happens when a tool call failed, so the model can fix it
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
 SEE_DEFAULT_QUESTION = "What am I looking at?"
@@ -167,7 +190,7 @@ def spoken_line(text: str, max_words: int = 8) -> str:
 _DANGLING = {"a", "an", "the", "to", "of", "for", "and", "or", "with", "in", "on", "at", "is", "are", "your", "my"}
 
 
-def compact_canvas(canvas: dict) -> str:
+def compact_canvas(canvas: dict, label: str = "On screen now, for reference only, never read this out") -> str:
     """Small text view of the canvas for the model (keeps sessions far from the context limit)."""
     if not canvas:
         return ""  # nothing on screen: send no context (the model echoed "[Canvas: empty]" as its whole reply)
@@ -182,7 +205,7 @@ def compact_canvas(canvas: dict) -> str:
             return {k: short(x) for k, x in v.items() if k not in ("html", "id")}
         return v
     parts = [f'{wid} ({w["widget"]}): {json.dumps(short(w["props"]), ensure_ascii=False)}' for wid, w in canvas.items()]
-    return "(On screen now, for reference only, never read this out: " + "; ".join(parts) + ")"
+    return f"({label}: " + "; ".join(parts) + ")"
 
 
 def parse_see(m: dict) -> tuple[bytes, str, str]:
@@ -226,6 +249,9 @@ class Connection:
         self.interrupted = False         # voice mode: orb_down during the reply, stop forwarding audio
         self.look_offered = False        # voice mode: the last reply asked "want me to look?", waiting for a yes
         self.look_requested = False      # voice mode: we told the orb to look; the next `see` frame answers that
+        self.last_pcm: bytes | None = None  # voice mode: the user's last utterance, for the canvas builder
+        self.last_text = ""              # ...or the last typed (dev) request
+        self.build_lock = asyncio.Lock() # one canvas build at a time
         self.streaming = False           # voice mode: mic frames go straight to the model
         self.released: asyncio.Event | None = None  # voice mode: set on orb_up / orb_cancel
 
@@ -312,10 +338,13 @@ class Connection:
                 if not self.listening and not getattr(self, "_working", False):
                     await self.send({"type": "orb", "state": "idle"})
 
-    async def voice_turn(self, *, text: str | None = None, pcm: bytes | None = None, label: str = ""):
-        """Speech to speech: one model reply in text + audio, the audio streamed to the client as it arrives."""
+    async def voice_turn(self, *, text: str | None = None, pcm: bytes | None = None, label: str = "", act: bool = True):
+        """Speech to speech: one model reply in text + audio, the audio streamed to the client as it arrives.
+        act=False for turns we start ourselves (announcements): their reply never starts a look or a build."""
         async with self.lock:
-            await self._voice_reply(text=text, pcm=pcm, label=label)
+            if act:
+                self.last_pcm, self.last_text = pcm, text or ""
+            await self._voice_reply(text=text, pcm=pcm, label=label, act=act)
 
     async def see_turn(self, jpeg: bytes, source: str, question: str):
         """Voice mode, `see` frame: describe the image, then answer the question out loud (same reply path)."""
@@ -330,7 +359,7 @@ class Connection:
                 return
             try:
                 await self.ensure_session()
-                await self.sm.stream_start()
+                await self.sm.stream_start(context=compact_canvas(self.canvas, "On the canvas now"))
                 sent = 0
                 while sent < len(self.audio):  # what arrived while we waited
                     chunk = bytes(self.audio[sent:])
@@ -353,10 +382,11 @@ class Connection:
                 log(f"utterance failed: {type(e).__name__}: {e}")
                 await self.send({"type": "orb", "state": "idle"})
                 return
+            self.last_pcm, self.last_text = pcm, ""
             await self._voice_reply(stream=True, label=f"{secs:.1f}s audio, {voiced:.1f}s voiced, streamed")
 
     async def _voice_reply(self, *, text: str | None = None, pcm: bytes | None = None, stream: bool = False,
-                           see: tuple | None = None, label: str = ""):
+                           see: tuple | None = None, label: str = "", act: bool = True):
         t0 = time.time()
         self.interrupted, self.speaking = False, False
         await self.send({"type": "orb", "state": "thinking"})
@@ -398,8 +428,9 @@ class Connection:
                 await self.send({"type": "say", "text": conversational(r.text)})
             log(f"voice {label!r}: first audio after release {first[0] if first else -1:.2f}s, total {time.time() - t0:.1f}s, "
                 f"{r.audio_s:.1f}s speech{', INTERRUPTED' if r.cancelled else ''}, est {self.sm.est} tok: {r.text[:80]!r}")
-            if not r.cancelled and not self.interrupted:
+            if act and not r.cancelled and not self.interrupted:
                 await self.maybe_look(r.text)
+                self.maybe_build(r.text)
         except Exception as e:
             log(f"voice turn failed: {type(e).__name__}: {e}")
             if self.speaking:
@@ -421,6 +452,74 @@ class Connection:
                 log(f"  look {source}: Nova asked, the user agreed")
                 await self.send({"type": "look", "source": source})
                 return
+
+    def maybe_build(self, text: str):
+        """After a voice reply: the spoken line "Okay, putting that on the canvas." starts the builder."""
+        if BUILD_NOW_RE.search(text or "") and (self.last_pcm or self.last_text):
+            log("  build: Nova announced it")
+            self.spawn(self.build(self.last_pcm, self.last_text))
+
+    async def build(self, pcm: bytes | None, text: str = ""):
+        """Creator mode: turn the user's last request into canvas tool calls (create/update/remove widgets) on the
+        chat endpoint, which takes a free llama slot while the voice session keeps its own. Widgets reach the
+        canvas as they are made. Nova has already answered out loud; this runs behind her."""
+        async with self.build_lock:
+            t0 = time.time()
+            await self.send({"type": "orb", "state": "thinking"})
+            try:
+                request = (text or clean(await asyncio.to_thread(transcribe, pcm))).strip()
+                if not request:
+                    return
+                t_asr = time.time() - t0
+                types = self.widgets or tools_mod.all_widget_types()
+                tools = builder.tool_list(types)
+                msgs = builder.messages(request, compact_canvas(self.canvas, "On the canvas now, for reference only, never read this out"), types)
+                steps = made = 0
+                while steps < BUILD_STEPS:
+                    steps += 1
+                    d = await asyncio.to_thread(_post, "/v1/chat/completions",
+                                                {"messages": msgs, "tools": tools, "temperature": 0,
+                                                 "max_tokens": 700 if steps == 1 else 300})
+                    m = d["choices"][0]["message"]
+                    calls = m.get("tool_calls") or []
+                    if not calls:
+                        break
+                    msgs.append({"role": "assistant", "content": m.get("content") or "", "tool_calls": calls})
+                    failed = False
+                    for c in calls:
+                        fn = c.get("function", {})
+                        name, args = fn.get("name", ""), fn.get("arguments") or {}
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args or "{}")
+                            except ValueError:
+                                args = {}
+                        if name == "escalate":
+                            result = self.start_escalation(args.get("task", request))
+                        else:
+                            out, result = to_canvas(name, args, self.canvas)
+                            for msg in out:
+                                await self.send(msg)
+                            made += bool(out)
+                        log(f"  build {name}({json.dumps(args, ensure_ascii=False)[:110]}) -> {result}")
+                        msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": json.dumps(result)})
+                        failed |= not result.get("ok", True)
+                    if not failed:  # everything worked: no follow-up call (each one costs seconds)
+                        break
+                log(f"build {request[:50]!r}: {made} canvas changes in {steps} steps, asr {t_asr:.1f}s, total {time.time() - t0:.1f}s")
+            except Exception as e:
+                log(f"build failed: {type(e).__name__}: {e}")
+            finally:
+                if not self.listening and not self.speaking and not self.lock.locked() and not getattr(self, "_working", False):
+                    await self.send({"type": "orb", "state": "idle"})
+
+    async def say(self, text: str):
+        """A short line for the user: in voice mode Nova says it in her own voice (never the browser voice)."""
+        if self.mode == "voice":
+            self.spawn(self.voice_turn(text=f"(Tell the user, in one short friendly sentence: {text})",
+                                       label="announce", act=False))
+        else:
+            await self.send({"type": "say", "text": text})
 
     def drop_utterance(self) -> bool:
         """End the utterance being streamed, if any, without a reply. True if there was one."""
@@ -453,11 +552,11 @@ class Connection:
                 await self.send({"type": "create", "id": wid, "widget": res["widget"], "props": res["props"],
                                  "importance": res.get("importance", "full")})
                 if res.get("say"):
-                    await self.send({"type": "say", "text": res["say"]})
+                    await self.say(res["say"])
             except Exception as e:
                 log(f"  escalation failed: {e}")
                 await self.send({"type": "remove", "id": wid})
-                await self.send({"type": "say", "text": "That one didn't work out."})
+                await self.say("That one didn't work out.")
             finally:
                 self._working = False
                 if not self.listening:
@@ -538,7 +637,10 @@ class Connection:
         name, wid, data = m.get("name"), m.get("id"), m.get("data") or {}
         log(f"event {wid}.{name} {data}")
         if name == "timer_done":  # handled directly: no model round trip needed
-            await self.send({"type": "say", "text": f"{data.get('label') or 'Timer'}'s done."})
+            await self.say(f"The {data.get('label') or 'timer'} timer is done." if self.mode == "voice"
+                           else f"{data.get('label') or 'Timer'}'s done.")
+            return
+        if self.mode == "voice":  # no tools in the voice session; ticks and counters reach us through canvas_state
             return
         self.spawn(self.turn(text=f"[Widget event: {wid} {name} {json.dumps(data)}] React only if useful.",
                              label=f"event {name}"))

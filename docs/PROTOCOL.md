@@ -34,7 +34,7 @@ orchestrator drops it, and anything the system says out loud arrives as a `say` 
 
 | type | fields | when |
 |---|---|---|
-| `hello` | `widgets`: list of widget types the canvas can draw, `mode?`: `canvas` (default) \| `voice` | On connect. `voice` = speech to speech, no tools, no widgets (the floating desktop orb, `desktop/`). |
+| `hello` | `widgets`: list of widget types the canvas can draw, `mode?`: `canvas` (default) \| `voice` | On connect. `voice` = speech to speech (the floating desktop orb, `desktop/`). The voice session has no tools, but the orchestrator still builds a canvas for it (see *Creator mode* below), so a voice client should draw `pending`/`create`/`update`/`remove`/`clear` and send `canvas_state` and widget `event`s like the canvas does. |
 | `orb_down` | – | The user starts holding the orb (or Space). Start listening. |
 | `orb_up` | – | The user lets go. End of the utterance. |
 | `orb_cancel` | – | Drop the audio, no turn. Sent with `orb_down` to just stop a reply, or when a conversation ends mid-utterance. |
@@ -51,6 +51,8 @@ any frames still in flight; the orchestrator stops forwarding audio and cancels 
 (`response.cancel`, measured: the turn ends ~0.2 s later), so the next turn starts right away.
 
 A `see` reply is interrupted the same way: `orb_down` during the image description or the reply stops it. The image is never sent into the realtime session (it takes no images): the model describes it on its chat endpoint first, and the description goes into the conversation as text.
+
+**Creator mode (voice mode builds the canvas):** the voice session has no tools (audio replies and tool calls don't mix), so Nova asks and acts through fixed spoken lines taught with examples in `VOICE_SYSTEM`. When the user asks for something ("I'm cooking pasta for four", "start a ten minute timer", "make it for six", "I'm done") she answers with exactly "Okay, putting that on the canvas." (or "Okay, clearing the canvas."). After that reply, the orchestrator transcribes the request (0.6 s) and runs the *builder* (`backend/builder.py`): a tool-calling turn on llama-server's chat endpoint, with the canvas state and worked examples, which sends the usual `create`/`update`/`remove`/`clear` messages as each call is made. Hard jobs call `escalate` (cloud). Announcements ("the timer is done") are spoken by Nova in her own voice, not with `say`. A client that is in voice mode needs the llama server's second slot free for this: run one orchestrator.
 
 **Speech out by mode:** canvas mode speaks `say` lines with the browser voice (tool turns must stay
 text-only: with audio output on, the model stops calling tools). Voice mode streams LFM's own voice.
@@ -73,6 +75,29 @@ Events: `timer_done {label}`.
 ### `stacked_bar`
 Props: `caption`, `headline? {value, unit?}`, `legend? [{label, value}]`, `categories` (x-axis labels),
 `series [{label, values}]` (stacked bottom to top), `goal? {value, label?}`, `max?`.
+
+### `note`
+Props: `title?`, `text` (a short paragraph; `\n` is a line break, a blank line is a gap).
+
+### `stat`
+Props: `label`, `value` (number or short text), `unit?`, `delta?` (e.g. "+120", shown small), `caption?`.
+One big number; changed digits roll in place. Works as a `satellite` chip (caption is hidden there).
+
+### `list`
+Props: `title?`, `items` (list of strings), `ordered?` (true = numbered, default bulleted). No checkboxes: use `checklist` for those.
+
+### `table`
+Props: `title?`, `columns` (list of strings), `rows` (list of rows, each a list of strings or numbers).
+Number-like columns are right-aligned. A long table scrolls inside its card.
+
+### `progress`
+Props: `label`, `value`, `total?` (default 100), `unit?`. Shows "40%" when out of 100 with no unit, else "3 of 8".
+Works as a `satellite` chip.
+
+### `counter`
+Props: `label`, `value`, `step?` (default 1). Big number with − / + buttons; a click updates `value` locally
+(so `canvas_state` shows it) and sends an event. Works as a `satellite` chip.
+Events: `changed {value}`.
 
 ### `html` (generated widgets)
 Props: `html` (a full document), `data?`, `height?`. Runs in a sandboxed iframe with scripts only.

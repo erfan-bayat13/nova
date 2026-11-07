@@ -463,11 +463,22 @@ class SessionManager:
     # ~0.5 s when all of it is sent at release. llama-server processes appended audio as it arrives.
     STREAM_RESERVE_S = 30  # room kept for the utterance before we know its length
 
-    async def stream_start(self, modalities=("text", "audio")):
-        """Begin an utterance. Rotates first if needed (never in the middle of one)."""
+    async def stream_start(self, modalities=("text", "audio"), context: str = ""):
+        """Begin an utterance. Rotates first if needed (never in the middle of one).
+        `context` (e.g. what is on the canvas) goes in as a short text item before the audio, like send_audio()."""
         n = int(self.STREAM_RESERVE_S * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD
+        self._stream_extra = 0
+        if context:
+            self._stream_extra = await asyncio.to_thread(count_tokens, context) + ITEM_OVERHEAD
+            n += self._stream_extra
         self._stream_rotated = await self._make_room(n, modalities)
         self._stream = bytearray()
+        if context:
+            try:
+                await self.ws.send(json.dumps({"type": "conversation.item.create", "item": {
+                    "type": "message", "role": "user", "content": [{"type": "input_text", "text": context}]}}))
+            except Exception:
+                pass  # server gone: the turn recovers without the note
 
     async def stream_append(self, pcm16k: bytes):
         if self._stream is None:
@@ -491,7 +502,8 @@ class SessionManager:
         """The user let go: commit what was streamed and reply."""
         pcm = bytes(self._stream or b"")
         self._stream = None
-        n = int(len(pcm) / 32000 * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD
+        n = int(len(pcm) / 32000 * AUDIO_IN_TOK_PER_S) + ITEM_OVERHEAD + getattr(self, "_stream_extra", 0)
+        self._stream_extra = 0
         entry = {"role": "user", "text": "", "pending": True}
         self.history.append(entry)
         first_try = True
