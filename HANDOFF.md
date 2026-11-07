@@ -9,6 +9,41 @@ everyday work, and Claude handles hard requests and teaches the local model new 
 
 ---
 
+## ▶ Latest (2026-11-07, afternoon): Nova can see, and asks before looking
+
+Code is committed on `voice-orb` (last: `0f45915`). Idea doc: [docs/IDEA-vision-and-background-agents.md](docs/IDEA-vision-and-background-agents.md).
+
+**What works (tested on the real model over text turns; real voice and the orb page path by hand: not yet):**
+- **Eyes on request** (desktop orb): ⌥⇧C camera, ⌥⇧S screen, ⌥⇧A **drag an area** (frozen still, crosshair, Esc cancels), also in the orb/tray menu.
+  One frame, JPEG ≤ 1.5 MB, kept in memory, sent once as a `see` message ([PROTOCOL.md](docs/PROTOCOL.md)). No disk, never stored.
+- **Ask, then look** (voice mode has no tools, so it uses fixed spoken lines taught with *examples* in `VOICE_SYSTEM`):
+  Nova asks "want me to take a look at your screen?", you say yes, she says "Okay, looking at your screen now." The orchestrator
+  acts only on that line *after an ask* (`maybe_look` in `backend/orchestrator.py`) and sends `{type:"look", source}`; the orb takes the frame,
+  and the answer uses what you originally asked. 10/10 looks fired in text tests (screen, camera, area), none on declines or small talk.
+- The image is described on the chat endpoint (capped at 60 tokens), the description goes into the realtime session as text, then Nova speaks.
+
+**Learnings worth keeping:**
+- **Rules in the prompt were ignored by the 2B; examples worked.** Without examples it skipped the ask and invented what was on screen.
+- **Two orchestrators on one llama-server hang the `see` call** (it needs a free slot; `-np 2`). Run exactly one orchestrator.
+- **`desktopCapturer` returns empty pictures sometimes** (one screen, or both right after launch). Capture retries up to 4×, falls back to any screen.
+  On this Mac, Screen 2 returned empty every time; the overlay opens on whichever screen gives a picture.
+- **Latency:** look → first audio ≈ 3–5 s warm (8–9 s on the first turn after a restart). The image is no longer the main cost
+  (area crop was not faster than the full screen at 768 px). The rest is the second step (realtime takes the description as text) and
+  spoken replies that run 10–15 s because the model ignores "one or two sentences".
+- Launching the orb from a non-Terminal shell changes which app macOS grants Camera / Screen Recording to.
+
+**Not done / open:**
+- **Camera permission was off** in macOS; turn it on for the app that launches the orb, restart the orb. Camera capture is untested.
+- Real-voice test of ask-then-look, and the orb page's handling of `look`, by hand.
+- The orb ignores the backend's `error` message (a rejected frame gives no feedback).
+- Spoken look replies are long; time the "description → realtime" step separately.
+- **Decision model (Liquid d1):** `d1-2B` / `d1-Omni-2B` answer typed questions with probabilities in one forward pass (no text). Good fit for a
+  router / "escalate to Claude?" gate, but Python `transformers>=5.19` only (no official GGUF), so it can't run in llama-server; 8 GB makes a
+  second model tight. Plan: test on ~50 of our utterances before adopting. Background agents: designed in the idea doc, not built.
+- `ios/` in the repo is unrelated to this work; ignore it. `prototype/logs/see_test.jpg` is a generated test image.
+
+---
+
 ## ▶ Start here (next session) — 2026-11-07, evening
 
 **Direction change:** the canvas is parked. First the app is a **speech-to-speech agent on the Mac**: a
@@ -82,7 +117,7 @@ the real mic; the Claude app's browser pane has none): http://localhost:5173/?ws
 | Canvas ↔ real backend | ✅ **talk to it**: mic streams to the backend, the model builds widgets, the browser voice answers | §2 C |
 | Escalation to Claude | ❌ stub (placeholder widget) | [backend/escalate.py](backend/escalate.py) |
 | "Cloud teaches, local remembers" (saving Claude widgets) | ❌ not started | §6 |
-| Camera / vision in the app | ❌ backend has `see()`, canvas doesn't capture frames | §6 |
+| Camera / screen / area vision (desktop orb) | ✅ hotkeys + ask-then-look; real voice and camera not yet tested by hand | Latest block above |
 
 ---
 
@@ -212,7 +247,7 @@ onto the screen: Claude writes the HTML once, the backend saves it, and next tim
 **Frontend:**
 - [x] **Stream mic audio to the backend** (`ui/src/mic.ts`): PCM16 16 kHz mono binary frames between `orb_down` and `orb_up`, last frame flushed before `orb_up`.
 - [x] Play LFM's own audio (voice mode / desktop orb): streamed PCM16 24 kHz, see PROTOCOL.md.
-- [ ] Camera: capture one full-resolution frame on request (`{type:"capture"}` → JPEG back). Backend has `SessionManager.see()` ready.
+- [x] (done in the desktop orb, see Latest) Camera: capture one frame on request (`{type:"capture"}` → JPEG back). Backend has `SessionManager.see()` ready.
 - [ ] Vision demo scene in the mock.
 - [ ] Linked widgets decision: the model updated only `servings` on "make it for six". Canvas-side linking (ingredients read `servings` from the recipe) is the most reliable fix.
 
