@@ -130,6 +130,11 @@ COMMENT_AFTER_BUILD = os.environ.get("NOVA_BUILD_COMMENT", "1") == "1"  # Nova r
 # question with no canvas words in it builds nothing, so a wrong line never puts an unwanted widget on the screen.
 QUESTION_RE = re.compile(r"^\s*(how|what|what's|whats|why|when|where|who|which|is|are|do|does|did|will|would|should)\b", re.I)
 CANVAS_WORDS_RE = re.compile(r"\b(make|show|add|put|start|set|create|track|plan|list|timer|chart|note|table|recipe|remind|build|clear|remove|update|change)\b", re.I)
+# A hard question ("explain how fixed and variable mortgages differ") is answered out loud by the 2B first, quickly, then handed
+# to Claude, whose answer arrives as a card with a spoken one-liner. Only question-shaped requests that look hard (or are long).
+HARD_Q_RE = re.compile(r"\b(explain|compare|comparison|differences?|pros and cons|best way|walk me through|step[- ]by[- ]step|in detail|"
+                       r"recommend|analy[sz]e|summar[iy][sz]e|which is better|should i (buy|get|choose|take|use)|how (does|do|can|should) .{12,})", re.I)
+ASK_RE = re.compile(r"^\s*(explain|compare|tell me|walk me|give me|help me understand)\b", re.I)
 BUILD_STEPS = 3     # model calls per build: a follow-up only happens when a tool call failed, so the model can fix it
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
@@ -444,6 +449,7 @@ class Connection:
             if act and not r.cancelled and not self.interrupted:
                 await self.maybe_look(r.text)
                 self.maybe_build(r.text)
+                self.maybe_hard_question(r.text)
         except Exception as e:
             log(f"voice turn failed: {type(e).__name__}: {e}")
             if self.speaking:
@@ -465,6 +471,21 @@ class Connection:
                 log(f"  look {source}: Nova asked, the user agreed")
                 await self.send({"type": "look", "source": source})
                 return
+
+    def maybe_hard_question(self, reply: str):
+        """After a voice reply that did not start a build: a hard question also goes to Claude."""
+        if not BUILD_NOW_RE.search(reply or "") and not self.build_lock.locked() and (self.last_pcm or self.last_text):
+            self.spawn(self._hard_question(self.last_text))
+
+    async def _hard_question(self, typed: str = ""):
+        text = (typed or await self.sm.last_user_text()).strip()
+        words = len(text.split())
+        if words < 5 or not (QUESTION_RE.match(text) or ASK_RE.match(text)):
+            return
+        if not (HARD_Q_RE.search(text) or words >= 18):
+            return
+        log(f"  hard question -> Claude: {text[:80]!r}")
+        self.start_escalation(text)
 
     def maybe_build(self, text: str):
         """After a voice reply: the spoken line "Okay, putting that on the canvas." starts the builder."""

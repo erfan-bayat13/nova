@@ -117,6 +117,7 @@ def test(fn):
         MOCK.reset()
         for f in os.listdir(TMP):
             os.remove(os.path.join(TMP, f))
+        os.environ["ESCALATE_NO_SHELL_KEY"] = "1"  # never pick up the real key from the login shell
         os.environ["ANTHROPIC_API_KEY"] = "test-key"
         os.environ["ANTHROPIC_BASE_URL"] = MOCK.url
         for k in ("ESCALATE_MODEL", "ESCALATE_TIMEOUT", "ESCALATE_EFFORT"):

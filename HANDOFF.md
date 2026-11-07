@@ -38,6 +38,12 @@ once (the orb heard it, Nova answered, a build started).
   Known: she sometimes says the canvas line for a bare idea (harmless now, the builder puts a starter widget up); a long prompt (~800 words) dilutes the examples.
   Tested: builder alone on a Spain conversation (starter list, then plan, packing list). The full spoken flow was verified before the final tweaks; the last
   runs were disturbed by a second client (an `Orb.app` copy of the desktop app launched from another session attached to the orchestrator and took llama's second slot).
+- **Cloud delegation is live (real Claude, 2026-11-07):** `ANTHROPIC_API_KEY` lives in `~/.zshrc`; `escalate.py` also reads it from the login shell when the
+  app was started from Finder/`open` (Orb.app does not inherit `~/.zshrc`). **Set `ANTHROPIC_BASE_URL=https://api.anthropic.com` (or unset it)** when launching from a Claude Code
+  session: that session exports its own gateway URL. Hard stuff reaches Claude two ways: the builder calls `escalate` (e.g. "plan ten days in Spain"), and a hard
+  question ("explain fixed vs variable mortgages", `HARD_Q_RE`) is answered by Nova first and then by Claude as a card plus one spoken line. Real results:
+  itinerary/compare/gym split as `table` in 3–6 s, a tip calculator as a NEW html widget (saved in `backend/learned/tip_calculator.json`, 14 s). Spoken end to end: verified.
+  The builder only gets the chat context on short requests that lean on it (otherwise the 2B copied the earlier topic).
 - **Verified by voice:** `python3 backend/creator_client.py` (orb app quit, one orchestrator) speaks pasta → "make it for six" → timer → chat → "I'm done" through
   the real voice path (real ASR, real builder). Recipe + ingredients appear, six rescales them (`builder.servings_fix`, because the 2B often resends the old
   numbers), the timer starts, chat builds nothing, "I'm done" clears (`CLEAR_RE`, no model call).

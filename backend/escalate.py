@@ -35,6 +35,7 @@ import html as htmllib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -112,6 +113,29 @@ def _failure_card(reason: str, task: str) -> dict:
 
 # ---------------------------------------------------------------- the API call
 
+_SHELL_KEY: str | None = None
+
+
+def _shell_key() -> str:
+    """ANTHROPIC_API_KEY from the user's login shell, once. A desktop app started from Finder or `open` (Orb.app) does not
+    inherit ~/.zshrc, so without this the key set there is invisible to the orchestrator. Skipped when
+    ESCALATE_NO_SHELL_KEY=1 (the tests). The key is never logged."""
+    global _SHELL_KEY
+    if _SHELL_KEY is None:
+        _SHELL_KEY = ""
+        if os.environ.get("ESCALATE_NO_SHELL_KEY") != "1":
+            try:
+                out = subprocess.run([os.environ.get("SHELL") or "/bin/zsh", "-ilc", "printenv ANTHROPIC_API_KEY"],
+                                     capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL).stdout
+                last = out.strip().splitlines()[-1].strip() if out.strip() else ""
+                if last.startswith("sk-"):
+                    _SHELL_KEY = last
+                    _log("using ANTHROPIC_API_KEY from the login shell")
+            except Exception:
+                pass
+    return _SHELL_KEY
+
+
 def _config() -> dict:
     def num(name, default):
         try:
@@ -123,7 +147,7 @@ def _config() -> dict:
     effort = os.environ.get("ESCALATE_EFFORT")
     effort = DEFAULT_EFFORT if effort is None else effort.strip().lower()
     return {
-        "key": os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+        "key": os.environ.get("ANTHROPIC_API_KEY", "").strip() or _shell_key(),
         "base": (os.environ.get("ANTHROPIC_BASE_URL") or DEFAULT_BASE_URL).strip().rstrip("/"),
         "model": (os.environ.get("ESCALATE_MODEL") or DEFAULT_MODEL).strip(),
         "timeout": num("ESCALATE_TIMEOUT", DEFAULT_TIMEOUT),
@@ -374,7 +398,7 @@ async def _run(cfg: dict, task: str, canvas, widgets) -> dict:
 async def escalate(task: str, canvas: dict, widgets: list[str]) -> dict:
     t0 = time.monotonic()
     task = str(task or "").strip()
-    cfg = _config()
+    cfg = await asyncio.to_thread(_config)  # the first call may start a login shell: keep it off the event loop
     if not cfg["key"]:
         _log("no ANTHROPIC_API_KEY")
         return _note(NO_KEY_TITLE, "Set it in the environment of the orchestrator, then restart it.",

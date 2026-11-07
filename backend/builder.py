@@ -148,8 +148,15 @@ def conversation_note(dialogue: list[tuple[str, str]], request: str, max_chars: 
     return ("(Earlier in this conversation, only for context, already handled: " + " | ".join(out) + ")") if out else ""
 
 
+_SELF_CONTAINED_RE = re.compile(r"\b(cook|cooking|make|making|bake|baking|timer|recipe|list|note|chart|track|table|plan)\b", re.I)
+
+
 def messages(request: str, canvas_note: str, types: list[str], convo_note: str = "") -> list[dict]:
-    """System prompt + worked examples + the request (with the chat so far and what is on the canvas, if anything)."""
+    """System prompt + worked examples + the request (with the chat so far and what is on the canvas, if anything).
+    The chat is only added to short requests that lean on it ("June, ten days, cities and food"): given to a
+    self-contained one ("I'm cooking pasta") the 2B copied the earlier topic instead."""
+    if len(request.split()) > 10 or _SELF_CONTAINED_RE.search(request):
+        convo_note = ""
     user = digits(request) + (f"\n\n{convo_note}" if convo_note else "") + (f"\n\n{canvas_note}" if canvas_note else "")
     return ([{"role": "system", "content": SYSTEM.format(widgets=tools.widget_docs_text(types))}]
             + FEWSHOT + [{"role": "user", "content": user}])
