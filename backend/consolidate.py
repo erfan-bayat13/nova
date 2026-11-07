@@ -11,7 +11,7 @@ stays as the 2B model and the supersede rule left it).
 """
 from __future__ import annotations
 
-import json, os, time, urllib.request
+import json, os, re, time, urllib.request
 from datetime import date
 
 from memory import Store
@@ -21,7 +21,9 @@ MAX_FACTS_OUT = 40
 
 SYSTEM = """You maintain a short list of lasting facts about one user, for a voice assistant with a tiny memory.
 You get today's date, the current facts (oldest first, with dates), and a few recent conversation lines.
-Return ONLY JSON: {"facts": [{"text": "...", "pinned": true|false}]}.
+Return ONLY JSON: {"facts": [{"text": "...", "pinned": true|false, "keywords": ["..."]}]}.
+"keywords": 3-6 other words someone might use when asking about this fact (synonyms, related things: for
+"The user's manager is named Priya." -> ["boss", "supervisor", "work", "team"]). Lowercase, single words.
 Rules:
 - Each fact: one short sentence in third person starting with "The user" (or "The user's ...").
 - Merge duplicates. When two facts conflict, keep the newer one. Drop trivia and anything about the assistant.
@@ -67,7 +69,8 @@ def parse(reply: str | None) -> list[dict] | None:
     out = []
     for f in data.get("facts", []) if isinstance(data, dict) else []:
         if isinstance(f, dict) and isinstance(f.get("text"), str) and f["text"].lower().startswith("the user"):
-            out.append({"text": f["text"].strip(), "pinned": bool(f.get("pinned"))})
+            kws = [k.lower() for k in f.get("keywords", []) if isinstance(k, str) and re.fullmatch(r"[A-Za-z0-9' -]{2,24}", k)]
+            out.append({"text": f["text"].strip(), "pinned": bool(f.get("pinned")), "kw": " ".join(kws[:6])})
     return out[:MAX_FACTS_OUT] or None
 
 

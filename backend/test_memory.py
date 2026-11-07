@@ -207,6 +207,67 @@ def test_orchestrator_wiring_with_a_fake_session():
     asyncio.run(run())
 
 
+def test_cold_facts_come_back_as_a_note_not_through_the_card():
+    import orchestrator
+    s = Store(":memory:")
+    s.add_fact("The user's dog is named Biscuit.")
+    for i in range(80):                                  # newer facts crowd the dog out of the 400-token card
+        s.add_fact(f"The user collects vintage postcards from city number {i} on their travels.")
+    mem = ConnectionMemory(s, "c2")
+    card = mem.card()
+    assert "Biscuit" not in card
+    note = mem.take_note("what's my dog's name?")
+    assert "Biscuit" in note and note.startswith("(Remembered from before") and note.endswith(")")
+    assert "[" not in note and orchestrator.strip_context_echo("Sure. " + note).strip() == "Sure."
+    assert mem.take_note("what's my dog's name?") == ""    # shown a moment ago: not repeated
+    assert mem.take_note("how do I boil an egg") == ""      # nothing relevant: no note at all
+    mem.off_record = True
+    mem.retriever.shown.clear()
+    assert mem.take_note("what's my dog's name?") == ""    # nothing is recalled off the record either
+
+
+def test_prefetch_for_voice_uses_the_last_exchange():
+    s = Store(":memory:")
+    s.add_fact("The user's dog is named Biscuit.")
+    for i in range(80):
+        s.add_fact(f"The user collects vintage postcards from city number {i} on their travels.")
+    mem, sm = ConnectionMemory(s, "c3"), FakeSM()
+    mem.card()
+    sm.say("user", "I'm thinking about getting a bigger dog bed")
+    sm.say("assistant", "Nice, what size is your dog?")
+    mem.sync(sm)                                          # transcript known after the reply: plan the next round
+    assert "Biscuit" in mem.next_note
+    assert "Biscuit" in mem.take_note() and mem.take_note() == ""
+
+
+def test_rule_facts_and_canonical_keys():
+    from memory import rule_facts
+    assert rule_facts("I live in Lisbon and my dog is called Biscuit.") == [
+        "The user lives in Lisbon.", "The user's dog is named Biscuit."]
+    assert rule_facts("My name is Erfan Bayat") == ["The user's name is Erfan Bayat."]
+    assert rule_facts("I'm allergic to shellfish") == ["The user is allergic to shellfish."]
+    assert rule_facts("I work as a nurse") == ["The user works as a nurse."]
+    assert rule_facts("I'm a bit tired, I live in a tiny flat") == []        # no false facts from small talk
+    s = Store(":memory:")
+    s.add_fact("The user lives in Lisbon.")
+    s.add_fact("The user moved to Porto last week.")                           # same thing, different verb
+    assert [r["text"] for r in s.active_facts()] == ["The user moved to Porto last week."]
+
+
+def test_forget_ignores_filler_words_and_questions_are_not_memories():
+    s = Store(":memory:")
+    s.add_turn("a", "user", "I live in Lisbon and my dog is called Biscuit")
+    s.add_turn("a", "user", "What's my dog's name?")
+    s.add_fact("The user's dog is named Biscuit.")
+    assert s.forget("about the dog")
+    assert s.stats() == {"turns": 0 + 0, "facts": 0, "superseded": 0} or s.stats()["facts"] == 0
+    assert not s.search("dog biscuit")
+    s2 = Store(":memory:")
+    s2.add_turn("a", "user", "Where did I say my dog lives?")
+    from retrieve import Retriever
+    assert Retriever(s2).retrieve("my dog lives where") == []                  # questions are never replayed as memories
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
