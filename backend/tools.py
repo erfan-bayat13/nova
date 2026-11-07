@@ -40,8 +40,9 @@ def tool_defs(widgets: list[str]) -> list[dict]:
                         "required": ["minutes"]}},
         {"name": "say", "description": "Speak a very short confirmation out loud (1-6 words). Never read the screen out.",
          "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
-        {"name": "escalate", "description": "Hand a hard task (planning, calculations, charts, research, a new kind "
-                                            "of widget) to the cloud expert.",
+        {"name": "escalate", "description": "Hand a BIG multi-step job to the cloud expert: plans over many days or "
+                                            "items, charts of computed data, a new kind of widget. Never for "
+                                            "questions you can answer in a sentence.",
          "parameters": {"type": "object", "properties": {"task": {"type": "string"}}, "required": ["task"]}},
     ]
 

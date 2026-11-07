@@ -52,9 +52,13 @@ ORCH_PORT=8766 python3 backend/test_client.py
 ## How a turn works
 
 1. `orb_down` → orb `listening`, start buffering binary PCM16 16 kHz frames.
-2. `orb_up` → orb `thinking`. The audio plus a compact `[Canvas: …]` line (from `canvas_state`) goes to the model.
+2. `orb_up` → orb `thinking`. The audio goes to the model, plus an `(On screen now, for reference only …)` note from `canvas_state` when the screen isn't empty. With an empty screen there's no note: the model used to answer "[Canvas: empty]" instead of the user.
 3. **Tool loop** (≤ 5 steps): each call is mapped to canvas messages (`create`/`update`/`remove`/`clear`, timer → `create timer`), and its result goes back to the model, which may call more tools. That lets one utterance update several widgets.
-4. The model's **closing line** (first sentence, ≤ 8 words) becomes `say`. If it called the `say` tool itself, that's used instead. Free text never reaches the screen.
+4. What it says out loud (`say`, never shown on screen):
+   - **ACT turns** (it called canvas tools): one short confirmation, the first clause of its closing line, ≤ 8 words ("Pasta for four.").
+   - **CHAT turns** (hello, small talk, quick facts, how-to questions, no tools): a natural reply, up to 3 sentences / 60 words.
+   - **Escalation**: a fixed "Let me work that one out.", then Claude's line when the result lands.
+   - If the model called the `say` tool itself, that's used. Copies of the screen note are stripped.
 5. orb `idle`.
 
 - `escalate` → `pending` card + orb `working` right away, Claude in the background, then `create` with the same id + `say`.

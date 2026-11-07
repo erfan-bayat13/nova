@@ -384,8 +384,8 @@ class SessionManager:
     # ---------------- public turns
     async def send_text(self, text: str, modalities=("text",), remember: bool = True, context: str = "",
                         tool_choice: str = "auto") -> Result:
-        """`context` (e.g. the current canvas state) is sent with the message but kept out of history/facts."""
-        full = f"{context}\n{text}" if context else text
+        """`context` (e.g. the current canvas state) is appended after the text, kept out of history/facts."""
+        full = f"{text}\n\n{context}" if context else text
         n = await asyncio.to_thread(count_tokens, full) + ITEM_OVERHEAD
         item = {"type": "conversation.item.create", "item": {
             "type": "message", "role": "user", "content": [{"type": "input_text", "text": full}]}}

@@ -34,15 +34,21 @@ MIN_AUDIO_S = 0.3      # ignore taps shorter than this
 MIN_VOICED_S = 0.25    # ...and utterances with less actual speech than this (the model invents content from silence)
 VOICE_RMS = 500        # PCM16 RMS above which a 30 ms window counts as speech
 
-SYSTEM = """You are Nova, the voice of a visual canvas. The user talks; you change the canvas by calling tools.
+SYSTEM = """You are Nova, a warm, casual friend who lives in a visual canvas. Everything you write is spoken aloud.
+Two kinds of turns:
+1. ACT: the user is doing something a widget helps with (cooking or making food -> recipe + ingredients
+   checklist; timers; lists; plans; charts), or asks to change or clear what's shown. Call the tools FIRST,
+   then reply with ONE very short, warm line (1-6 words), e.g. "Pasta for four." or "Six it is. Timer's running."
+   Never say you did something without calling the tool.
+2. CHAT: greetings, small talk, thanks, opinions, quick facts and how-to questions ("how long does pasta take?").
+   Don't call any tool, just answer naturally like a friend, in 1-3 short sentences.
 Rules:
-- Change the canvas only through tool calls.
-- When you're done with the tools, reply with ONE very short, warm spoken line (1-6 words), e.g. "Pasta for four." or "Six it is. Timer's running." Nothing else. Never mention the canvas, widgets or brackets in it.
+- Change the canvas only through tool calls. Never mention the canvas, widgets or brackets in what you say.
 - When the user says they're done or finished, call clear_canvas.
-- The screen is the answer: never read widget contents out loud.
-- Each user message starts with [Canvas: ...], the widgets on screen right now. Update existing widgets by id instead of creating duplicates.
+- When something is on screen, the screen is the answer: never read widget contents out loud.
+- A user message may end with "(On screen now ...)": the widgets currently shown. Use their ids to update them instead of creating duplicates. Never repeat that note.
 - When a change affects several widgets (e.g. servings change recipe AND ingredients), update each of them.
-- For hard tasks (planning, calculations over many items, charts, research, a widget type you don't have) call escalate.
+- Only for big jobs (multi-day plans, calculations over many items, charts, research, a widget type you don't have) call escalate. Never escalate a quick question.
 - If you didn't hear or see something, say so instead of guessing.
 Widgets you can create:
 {widgets}"""
@@ -65,11 +71,35 @@ def voiced_seconds(pcm: bytes, rate: int = 16000) -> float:
     return loud * 0.03
 
 
+def strip_context_echo(text: str) -> str:
+    """Remove copies of the screen note the model sometimes repeats: [Canvas: ...] or (On screen now ...)."""
+    text = re.sub(r"\[[^\]]*\]?", "", text)
+    return re.sub(r"\(\s*on screen now[^)]*\)?", "", text, flags=re.I)
+
+
+def conversational(text: str, max_sentences: int = 3, max_words: int = 60) -> str:
+    """A natural spoken reply: brackets and markdown removed, at most 3 sentences / 60 words."""
+    text = strip_context_echo(text)
+    text = re.sub(r"[*_#`>]+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    out, n = [], 0
+    for sent in re.split(r"(?<=[.!?])\s", text):
+        w = len(sent.split())
+        if out and (len(out) >= max_sentences or n + w > max_words):
+            break
+        out.append(sent)
+        n += w
+    return " ".join(out)
+
+
 def spoken_line(text: str, max_words: int = 8) -> str:
     """First sentence of the model's closing text, at most `max_words` words. Drops [bracketed] echoes
     of the canvas context, which the model sometimes copies into its reply."""
-    text = re.sub(r"\[[^\]]*\]?", "", text).strip()
+    text = strip_context_echo(text).strip()
     first = re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0]
+    first = first.split(":")[0].strip()  # "Here's your list: - Eggs..." -> "Here's your list"
+    if first and first[-1] not in ".!?":
+        first += "."
     words = first.split()
     if len(words) <= max_words:
         return first
@@ -85,7 +115,7 @@ _DANGLING = {"a", "an", "the", "to", "of", "for", "and", "or", "with", "in", "on
 def compact_canvas(canvas: dict) -> str:
     """Small text view of the canvas for the model (keeps sessions far from the context limit)."""
     if not canvas:
-        return "[Canvas: empty]"
+        return ""  # nothing on screen: send no context (the model echoed "[Canvas: empty]" as its whole reply)
 
     def short(v):
         if isinstance(v, str):
@@ -97,7 +127,7 @@ def compact_canvas(canvas: dict) -> str:
             return {k: short(x) for k, x in v.items() if k not in ("html", "id")}
         return v
     parts = [f'{wid} ({w["widget"]}): {json.dumps(short(w["props"]), ensure_ascii=False)}' for wid, w in canvas.items()]
-    return "[Canvas: " + "; ".join(parts) + "]"
+    return "(On screen now, for reference only, never read this out: " + "; ".join(parts) + ")"
 
 
 class Connection:
@@ -167,13 +197,18 @@ class Connection:
                         r = None
                         break
                     r = await self.sm.send_tool_results(results, modalities=("text",))
+                if escalating and not said and not (r is not None and r.text):
+                    await self.send({"type": "say", "text": "Let me work that one out."})
+                    said = True
                 if r is not None and r.calls:  # step limit hit: close the open calls so the session stays valid
                     await self.sm.send_tool_results([(c["call_id"], {"ok": False, "error": "step limit"})
                                                      for c in r.calls], respond=False)
                 if r is not None and r.text and not said:
-                    # The model's closing line is the spoken confirmation (it rarely calls `say` itself).
-                    # Only the first sentence, clipped: the canvas never shows it, the voice says it.
-                    line = spoken_line(r.text)
+                    # The model's closing text is what it says out loud (it rarely calls `say` itself).
+                    # After canvas changes: one short confirmation. Plain conversation: a natural reply,
+                    # capped well under the ~80-word limit where speech quality drops.
+                    line = ("Let me work that one out." if escalating
+                            else spoken_line(r.text) if steps else conversational(r.text))
                     if line:
                         await self.send({"type": "say", "text": line})
                         said = True
