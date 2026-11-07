@@ -126,6 +126,10 @@ BUILD_NOW_RE = re.compile(r"\b(putting|adding|setting up|updating|changing|clear
 # (the 2B sometimes answers it with prose) and the words are unambiguous. Everything else goes to the builder.
 CLEAR_RE = re.compile(r"\b(i'?m|i am|we'?re|we are|all)\s+(all\s+)?(done|finished)\b|\bclear (it|that|this|everything|the (canvas|screen))\b|\bthat'?s (all|everything)\b|\bstart over\b", re.I)
 COMMENT_AFTER_BUILD = os.environ.get("NOVA_BUILD_COMMENT", "1") == "1"  # Nova remarks on what she built, in her own voice
+# Nova sometimes says the canvas line for a plain question about the topic at hand ("how long does pasta take?"). A bare
+# question with no canvas words in it builds nothing, so a wrong line never puts an unwanted widget on the screen.
+QUESTION_RE = re.compile(r"^\s*(how|what|what's|whats|why|when|where|who|which|is|are|do|does|did|will|would|should)\b", re.I)
+CANVAS_WORDS_RE = re.compile(r"\b(make|show|add|put|start|set|create|track|plan|list|timer|chart|note|table|recipe|remind|build|clear|remove|update|change)\b", re.I)
 BUILD_STEPS = 3     # model calls per build: a follow-up only happens when a tool call failed, so the model can fix it
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
@@ -480,6 +484,9 @@ class Connection:
                 if not request:
                     return
                 t_asr = time.time() - t0
+                if QUESTION_RE.match(request) and not CANVAS_WORDS_RE.search(request):
+                    log(f"build {request[:50]!r}: just a question, nothing to build")
+                    return
                 if self.canvas and CLEAR_RE.search(request):
                     out, result = to_canvas("clear_canvas", {}, self.canvas)
                     for msg in out:
