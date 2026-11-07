@@ -9,6 +9,60 @@ everyday work, and Claude handles hard requests and teaches the local model new 
 
 ---
 
+## ▶ Start here (next session) — 2026-11-07
+
+**Where it stopped:** the app works end to end (talk to the canvas → the local model builds widgets and
+answers), but **the voice the user hears is the browser's built-in voice, and the user hates it.**
+The goal is to play **LFM's own voice** (the 24 kHz voice in `prototype/examples.html`, which the user liked).
+Nothing for this is committed yet. All work up to here is committed (`af84b43`).
+
+**What we learned while trying (don't repeat these):**
+1. **Text + speech output kills tool calls.** With `output_modalities: ["text","audio"]` the model just
+   *talks* ("Pasta for four.") and never calls `create_widget`. So the thinking/tool turns must stay
+   text-only, and the voice has to come from a separate speaking step.
+2. **"Repeat this exactly" doesn't work as TTS.** A separate realtime session told to say the line word
+   for word *answers* it instead ("Let me work that one out." → "Understood. I am ready when you are.").
+   Only 4/7 lines came out right. First audio was fast though (~0.4 s).
+3. **Untested, and the next thing to try:** the model card's TTS mode, with instructions
+   `"Perform TTS in English using a female voice."` and **speech-only** output (`["audio"]`). An earlier
+   attempt with text + speech output spoke only fragments. Note that speech-only *chat* overran with
+   silence (prototype/README), so check for a silent tail. Measure: ASR match vs the line, first-audio
+   time, trailing silence. Fallback if it fails: `llama-tts -m … -mm … --tts-voice female` (but that loads
+   a second model, ~1.6 GB, risky on 8 GB).
+4. If TTS works, the plan:
+   - `session_manager`/backend: after a turn's final line is known (CHAT reply or ACT confirmation),
+     open a short-lived TTS realtime session and stream its audio deltas to the canvas as **binary frames,
+     PCM16 24 kHz mono**, framed by `{type:"speech_start"}` / `{type:"speech_end", text}`. Keep `say` as
+     the fallback when there's no audio.
+   - Canvas (`ui/src/voice.ts` + `useCanvas.ts`, `ws.binaryType = "arraybuffer"`): schedule the 24 kHz
+     chunks on an AudioContext back to back, show `speaking` until the last one ends, stop everything
+     on `orb_down` (interrupt).
+   - Update PROTOCOL.md in the same commit.
+
+**⚠️ The Mac is an 8 GB M2: the user's machine got very slow during these tests.** Run one heavy thing at a
+time. Don't keep a test script, the orchestrator, the browser pane and llama-server all busy at once. Prefer
+short tests. Close the browser pane when you're done with it.
+
+**How to bring everything back up** (all of it was stopped at the end of the last session):
+
+```bash
+llama serve -hf LiquidAI/LFM3-Omni-2B-GGUF:Q4_K_M --reasoning off --temp 0 --port 8080 -np 2 -c 16384
+```
+
+```bash
+cd ~/Documents/hackathon && ORCH_PORT=8766 python3 backend/orchestrator.py
+```
+
+Canvas (from `ui/`: `npm run demo` keeps the mock on 8765 and Vite on 5173), then open in **Chrome** (it needs
+the real mic; the Claude app's browser pane has none): http://localhost:5173/?ws=ws://localhost:8766/canvas
+
+**Other recent decisions (this session):**
+- Nova **talks normally**: CHAT turns (hello, small talk, quick questions) get a natural 1–3 sentence spoken
+  reply. ACT turns (cooking, timers, lists, clearing) call tools and give a short confirmation. See `backend/README.md`.
+- No screen note is sent when the canvas is empty: the model answered "[Canvas: empty]" instead of the user.
+- Silent taps are ignored (< 0.25 s of speech): the model invented a recipe from silence.
+- Friendly tone (Nova) stays the default. Warm-up for the cold first turn (~5–6 s) is still to do after the voice.
+
 ## 0. Status at a glance
 
 | Piece | State | Where |
