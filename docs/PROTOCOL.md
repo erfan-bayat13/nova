@@ -20,6 +20,7 @@ orchestrator drops it, and anything the system says out loud arrives as a `say` 
 | `update` | `id`, `props` | Merges `props` into the widget. Changed words and numbers roll in place. |
 | `remove` | `id` | The widget shrinks back into the orb. |
 | `clear` | – | Removes all widgets, one after another. |
+| `look` | `source`: `screen` \| `camera` \| `area` | **Voice mode.** Sent right after a reply (`speech_end`) in which Nova asked "want me to look?", the user said yes, and Nova announced it ("Okay, looking at your screen now."). The orb takes one frame the same way as its hotkeys (`area` = drag a rectangle) and sends it as a `see`; that `see` is answered using what the user just asked, not the default question. Nothing is sent if there was no ask first. |
 | `error` | `text` | **Voice mode.** The orchestrator refused a client message (e.g. a bad `see` frame). `text` says why, in plain words. Nothing else changes: the orb state is untouched and no reply follows. |
 
 `importance` decides placement. The model never sends coordinates.

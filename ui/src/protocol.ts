@@ -10,6 +10,7 @@ export type ServerMsg =
   | { type: 'say'; text: string }
   | { type: 'speech_start' }
   | { type: 'speech_end'; text?: string }
+  | { type: 'look'; source: 'screen' | 'camera' | 'area' } // Nova asked and the user agreed: take one frame
   | { type: 'pending'; id: string; importance: Importance }
   | { type: 'create'; id: string; widget: string; props: Props; importance: Importance }
   | { type: 'update'; id: string; props: Props }

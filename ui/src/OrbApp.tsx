@@ -41,7 +41,8 @@ const shell = (window as unknown as { orbShell?: Shell }).orbShell;
 export function OrbApp() {
   const stage = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: innerWidth, h: innerHeight });
-  const c = useCanvas(WS_URL, 'voice');
+  const lookRef = useRef<(k: LookKind) => void>(() => {}); // set below, once `look` exists
+  const c = useCanvas(WS_URL, 'voice', (k) => lookRef.current(k));
   const [shown, setShown] = useState(!shell);
   const [held, setHeld] = useState(false);
   const heldRef = useRef(false);
@@ -191,6 +192,7 @@ export function OrbApp() {
   // ---------------- inputs
   const api = useRef({ press, release, cancel, toggle: convo.toggle, look });
   api.current = { press, release, cancel, toggle: convo.toggle, look };
+  lookRef.current = look;
   useEffect(() => {
     shell?.onPtt((kind) => {
       if (HANDSFREE) return;

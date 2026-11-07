@@ -67,10 +67,46 @@ Widgets you can create:
 VOICE_SYSTEM = """You are Nova, a warm, casual friend the user talks to by voice on their computer. Everything you say is spoken aloud.
 Answer naturally, like a friend on a call: usually one to three short sentences. Go longer only if they ask for detail, and never more than about 80 words.
 No markdown, lists, emojis, sound effects or stage directions. Say numbers and units the way people speak them.
-If you didn't hear or understand something, say so and ask them to repeat instead of guessing."""
+If you didn't hear or understand something, say so and ask them to repeat instead of guessing.
+
+You can look at the user's screen, their camera, or a part of the screen they pick, but only after they say yes. You see nothing until a note describing the picture arrives after you say you are looking, so never describe their screen or camera before that. Once the note arrives, use it to answer what they asked, in a sentence or two.
+Always ask first, then look only after a yes. When you say you are looking, say only that one line and stop: the picture comes next. Examples:
+User: Can you look at my screen?
+You: Sure, want me to take a look at your screen?
+User: Yes please.
+You: Okay, looking at your screen now.
+User: What is this thing I'm holding?
+You: Want me to look through the camera?
+User: Yeah.
+You: Okay, looking through the camera now.
+User: Can you check just one part of my screen?
+You: Sure, want me to look at an area you pick?
+User: Yes.
+You: Okay, select the area you want me to look at.
+User: Look at my screen please.
+You: Sure, want me to take a look at your screen?
+User: Yes.
+You: Okay, looking at your screen now.
+User: Take a look at this.
+You: Want me to look through the camera, or at your screen?
+User: The screen.
+You: Okay, looking at your screen now.
+User: Look at my screen.
+You: Want me to take a look at your screen?
+User: No.
+You: No problem, I won't look."""
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
 SEE_DEFAULT_QUESTION = "What am I looking at?"
+LOOK_FOLLOW_UP = "Now answer what I just asked, using what you see."  # a look Nova asked for, not a hotkey
+# Voice mode has no tools, so the model asks and acts through fixed spoken lines (VOICE_SYSTEM): one asking
+# permission, then one announcing the look. The code only acts on an announcement that follows an ask.
+LOOK_OFFER_RE = re.compile(r"\b(want me to|do you want me to|would you like me to|should i|shall i|can i|could i|may i)\b[^.?!]*\b(look|take a look|check|see)\b", re.I)
+LOOK_NOW = [  # most specific first
+    ("area", re.compile(r"\b(select|pick|choose|drag)\b[^.?!]*\barea\b|\blooking at (the|an?) (selected |picked |chosen )?area\b|\barea you (picked|selected|chose)", re.I)),
+    ("camera", re.compile(r"looking (through|at|with) (the|your) camera", re.I)),
+    ("screen", re.compile(r"looking at (the|your|that) (screen|display|desktop)", re.I)),
+]
 
 
 def log(*a):
@@ -188,6 +224,8 @@ class Connection:
         self.mode = "canvas"             # or "voice" (speech to speech, see module docstring)
         self.speaking = False            # voice mode: a reply is being streamed to the client
         self.interrupted = False         # voice mode: orb_down during the reply, stop forwarding audio
+        self.look_offered = False        # voice mode: the last reply asked "want me to look?", waiting for a yes
+        self.look_requested = False      # voice mode: we told the orb to look; the next `see` frame answers that
         self.streaming = False           # voice mode: mic frames go straight to the model
         self.released: asyncio.Event | None = None  # voice mode: set on orb_up / orb_cancel
 
@@ -360,6 +398,8 @@ class Connection:
                 await self.send({"type": "say", "text": conversational(r.text)})
             log(f"voice {label!r}: first audio after release {first[0] if first else -1:.2f}s, total {time.time() - t0:.1f}s, "
                 f"{r.audio_s:.1f}s speech{', INTERRUPTED' if r.cancelled else ''}, est {self.sm.est} tok: {r.text[:80]!r}")
+            if not r.cancelled and not self.interrupted:
+                await self.maybe_look(r.text)
         except Exception as e:
             log(f"voice turn failed: {type(e).__name__}: {e}")
             if self.speaking:
@@ -369,6 +409,18 @@ class Connection:
             self.speaking = False
             if not self.listening:
                 await self.send({"type": "orb", "state": "idle"})
+
+    async def maybe_look(self, text: str):
+        """After a voice reply: a spoken "looking now" line that follows a spoken ask makes the orb take a frame."""
+        offered, self.look_offered = self.look_offered, bool(LOOK_OFFER_RE.search(text or ""))
+        if not offered:
+            return
+        for source, rx in LOOK_NOW:
+            if rx.search(text or ""):
+                self.look_offered, self.look_requested = False, True
+                log(f"  look {source}: Nova asked, the user agreed")
+                await self.send({"type": "look", "source": source})
+                return
 
     def drop_utterance(self) -> bool:
         """End the utterance being streamed, if any, without a reply. True if there was one."""
@@ -469,6 +521,9 @@ class Connection:
                 log(f"  rejected {e}")
                 await self.send({"type": "error", "text": str(e)})
                 return
+            if self.look_requested and not (isinstance(m.get("question"), str) and m["question"].strip()):
+                question = LOOK_FOLLOW_UP
+            self.look_requested = False
             log(f"  see {source}: {len(jpeg)} bytes{' (waiting for the previous turn)' if self.lock.locked() else ''}")
             self.spawn(self.see_turn(jpeg, source, question))
         elif t == "text":  # dev/testing input, see docs/PROTOCOL.md

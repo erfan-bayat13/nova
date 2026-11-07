@@ -56,7 +56,9 @@ function reducer(s: Widgets, a: Action): Widgets {
 }
 const rank = (i: Importance) => ({ satellite: 0, side: 1, hero: 2, full: 3 })[i];
 
-export function useCanvas(url: string, mode: Mode = 'canvas') {
+export function useCanvas(url: string, mode: Mode = 'canvas', onLook?: (source: 'screen' | 'camera' | 'area') => void) {
+  const lookRef = useRef(onLook);
+  lookRef.current = onLook;
   const [widgets, dispatch] = useReducer(reducer, {});
   const [orb, setOrb] = useState<OrbState>('idle');
   const [speaking, setSpeaking] = useState(false);
@@ -90,6 +92,7 @@ export function useCanvas(url: string, mode: Mode = 'canvas') {
         else if (m.type === 'say') speak(m.text, setSpeaking);
         else if (m.type === 'speech_start') speechStart(setSpeaking);
         else if (m.type === 'speech_end') speechEnd();
+        else if (m.type === 'look') lookRef.current?.(m.source);
         else dispatch(m);
       };
     };
