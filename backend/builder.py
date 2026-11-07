@@ -10,6 +10,7 @@ llama-server's prompt cache covers them after the first build.
 from __future__ import annotations
 
 import json
+import re
 
 import tools
 
@@ -18,18 +19,19 @@ SYSTEM = """You are the hands of a voice assistant. The user just asked for some
 - Timers: start_timer. Things to tick off (to-dos, packing, shopping): checklist. Plain lists: list. A number to watch: stat, counter or progress. Comparisons or data: table or stacked_bar. A few lines of text: note.
 - importance: hero for the main thing, side for supporting info, satellite for small urgent things (timers), full for wide charts.
 - To change what is already shown, call update_widget with the same id instead of creating a duplicate; when a change affects several widgets (servings change the recipe AND the ingredients) update each of them.
+- When the user changes servings or amounts, set the new `servings` and the new title AND rescale every ingredient quantity to match (never resend the old numbers).
 - remove_widget for one thing, clear_canvas when they are done.
 - Only call escalate for big jobs (multi-day plans, computed charts, research, a kind of widget you don't have). Never for simple requests.
 - If the request needs nothing on the canvas, call no tools.
 Widgets you can create:
 {widgets}"""
 
-_RECIPE = {"title": "Pasta for four", "servings": 4, "meta": "20 min",
-           "steps": ["Boil salted water.", "Cook the pasta for 10 minutes.", "Drain and toss with sauce."]}
-_ING = {"title": "Ingredients", "items": [{"id": "pasta", "label": "Pasta", "detail": "400 g"},
-                                            {"id": "sauce", "label": "Tomato sauce", "detail": "1 jar"},
-                                            {"id": "salt", "label": "Salt"}]}
-_NOTE = "(On the canvas now, for reference only, never read this out: recipe (recipe): {\"title\": \"Pasta for four\", \"servings\": 4}; ingredients (checklist): {\"title\": \"Ingredients\"})"
+_RECIPE = {"title": "Banana bread", "servings": 6, "meta": "1 hr",
+           "steps": ["Mash three ripe bananas.", "Mix in the butter, sugar, egg and flour.", "Bake at 175 C for 50 minutes."]}
+_ING = {"title": "Ingredients", "items": [{"id": "bananas", "label": "Bananas", "detail": "3 ripe"},
+                                            {"id": "flour", "label": "Flour", "detail": "250 g"},
+                                            {"id": "sugar", "label": "Sugar", "detail": "100 g"}]}
+_NOTE = "(On the canvas now, for reference only, never read this out: recipe (recipe): {\"title\": \"Banana bread\", \"servings\": 6}; ingredients (checklist): {\"title\": \"Ingredients\"})"
 
 
 def _tc(i: int, name: str, args: dict) -> dict:
@@ -45,25 +47,84 @@ def _example(user: str, calls: list[tuple[str, dict]]) -> list[dict]:
 
 
 FEWSHOT: list[dict] = (
-    _example("I'm cooking pasta for four.", [
+    _example("I'm baking banana bread this afternoon.", [
         ("create_widget", {"id": "recipe", "widget": "recipe", "props": _RECIPE, "importance": "hero"}),
         ("create_widget", {"id": "ingredients", "widget": "checklist", "props": _ING, "importance": "side"})])
-    + _example(f"Make it for six.\n\n{_NOTE}", [
-        ("update_widget", {"id": "recipe", "props": {"title": "Pasta for six", "servings": 6}}),
+    + _example(f"Make it for twelve.\n\n{_NOTE}", [
+        ("update_widget", {"id": "recipe", "props": {"title": "Banana bread for 12", "servings": 12}}),
         ("update_widget", {"id": "ingredients", "props": {"items": [
-            {"id": "pasta", "label": "Pasta", "detail": "600 g"},
-            {"id": "sauce", "label": "Tomato sauce", "detail": "1.5 jars"},
-            {"id": "salt", "label": "Salt"}]}})])
-    + _example("Start a ten minute timer.", [("start_timer", {"minutes": 10, "label": "Timer"})])
-    + _example(f"I'm done, thanks.\n\n{_NOTE}", [("clear_canvas", {})])
-    + _example("Make me a packing list for a beach trip.", [
-        ("create_widget", {"id": "packing", "widget": "checklist", "importance": "hero", "props": {
-            "title": "Beach trip", "items": [{"id": "1", "label": "Sunscreen"}, {"id": "2", "label": "Towel"},
-                                             {"id": "3", "label": "Swimsuit"}, {"id": "4", "label": "Sunglasses"}]}})])
-    + _example("Track my water, I've had three of eight glasses.", [
-        ("create_widget", {"id": "water", "widget": "progress", "importance": "side",
-                           "props": {"label": "Water", "value": 3, "total": 8, "unit": "glasses"}})])
+            {"id": "bananas", "label": "Bananas", "detail": "6 ripe"},
+            {"id": "flour", "label": "Flour", "detail": "500 g"},
+            {"id": "sugar", "label": "Sugar", "detail": "200 g"}]}})])
+    + _example("Set a 25 minute timer.", [("start_timer", {"minutes": 25, "label": "Timer"})])
+    + _example(f"All finished, thank you.\n\n{_NOTE}", [("clear_canvas", {})])
 )
+
+
+_NUMBERS = {w: str(i) for i, w in enumerate(
+    "two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty".split(), 2)}
+_NUMBERS.update({"thirty": "30", "forty": "40", "fifty": "50", "sixty": "60", "ninety": "90", "a hundred": "100"})
+_NUM_RE = re.compile(r"\b(" + "|".join(sorted(_NUMBERS, key=len, reverse=True)) + r")\b", re.I)
+
+
+def digits(text: str) -> str:
+    """Spoken numbers as digits ("make it for six" -> "make it for 6"): the 2B handles digits far better than words.
+    "one" is left alone (no one, one of them)."""
+    text = _COMPOUND.sub(lambda m: str(_TENS[m.group(1).lower()] + _UNITS[m.group(2).lower()]), text)
+    return _NUM_RE.sub(lambda m: _NUMBERS[m.group(1).lower()], text)
+
+
+_TENS = {"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "ninety": 90}
+_UNITS = {w: i for i, w in enumerate("one two three four five six seven eight nine".split(), 1)}
+_COMPOUND = re.compile(r"\b(" + "|".join(_TENS) + r")[ -](" + "|".join(_UNITS) + r")\b", re.I)
+
+
+def _servings_in(request: str) -> int | None:
+    m = (re.search(r"\b(?:for|serves|serving|servings of)\s+(\d{1,3})\b(?!\s*(?:minutes?|mins?|hours?|seconds?|secs?))", request, re.I)
+         or re.search(r"\b(\d{1,3})\s+(?:people|persons|servings|portions|guests|slices)\b", request, re.I))
+    return int(m.group(1)) if m else None
+
+
+def _scale_detail(detail: str, f: float) -> str:
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)(?:/(\d+))?(.*)$", detail or "")
+    if not m:
+        return detail
+    n = float(m.group(1)) / (float(m.group(2)) if m.group(2) else 1)
+    v = round(n * f, 2)
+    return (str(int(v)) if v == int(v) else f"{v:g}") + m.group(3)
+
+
+def servings_fix(request: str, before: dict, after: dict) -> list[tuple[str, dict]]:
+    """The 2B sometimes answers "make it for six" with updates that still say four. When the request names a new
+    number of servings and the recipe's `servings` did not change, set it, fix the number in the title, and scale
+    every ingredient quantity the model left as it was. Returns update_widget calls (empty when nothing to fix)."""
+    n = _servings_in(request)
+    old = (before.get("recipe") or {}).get("props", {}).get("servings")
+    cur = (after.get("recipe") or {}).get("props", {}).get("servings")
+    try:
+        old, cur = float(old), float(cur)
+    except (TypeError, ValueError):
+        return []
+    if n is None or n <= 0 or old <= 0 or cur != old or n == old:
+        return []
+    f = n / old
+    title = (after["recipe"]["props"].get("title") or "")
+    calls = [("update_widget", {"id": "recipe", "props": {
+        "servings": n, "title": re.sub(rf"\b{int(old)}\b", str(n), title) if title else title}})]
+    ing, was = after.get("ingredients"), (before.get("ingredients") or {}).get("props", {}).get("items") or []
+    if ing and isinstance(ing["props"].get("items"), list):
+        old_detail = {i.get("id") or i.get("label"): i.get("detail") for i in was if isinstance(i, dict)}
+        items = []
+        for it in ing["props"]["items"]:
+            if not isinstance(it, dict):
+                items.append(it)
+                continue
+            key = it.get("id") or it.get("label")
+            if it.get("detail") and old_detail.get(key) == it.get("detail"):  # the model left the old quantity
+                it = {**it, "detail": _scale_detail(it["detail"], f)}
+            items.append(it)
+        calls.append(("update_widget", {"id": "ingredients", "props": {"items": items}}))
+    return calls
 
 
 def tool_list(types: list[str]) -> list[dict]:
@@ -74,6 +135,6 @@ def tool_list(types: list[str]) -> list[dict]:
 
 def messages(request: str, canvas_note: str, types: list[str]) -> list[dict]:
     """System prompt + worked examples + the request (with what is on the canvas now, if anything)."""
-    user = request + (f"\n\n{canvas_note}" if canvas_note else "")
+    user = digits(request) + (f"\n\n{canvas_note}" if canvas_note else "")
     return ([{"role": "system", "content": SYSTEM.format(widgets=tools.widget_docs_text(types))}]
             + FEWSHOT + [{"role": "user", "content": user}])

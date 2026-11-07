@@ -28,9 +28,14 @@ server; the orb page against the mock in a browser with a faked shell. The real 
 once (the orb heard it, Nova answered, a build started).
 
 **⚠️ Open, important:**
-- **llama-server hung** after that run: both slots "processing", ~0 % CPU, even a trivial chat request timed out. Probable cause: the builder's own
-  ASR running at the same time as the session's after-reply ASR (two audio requests at once). Fixed in code (`last_user_text`), **not verified**.
-  Restart llama-server (the orchestrator starts it if it isn't running) and re-test before trusting creator mode. Never run two audio chat requests at once.
+- **llama-server hang: fixed and verified.** It hung once when the builder ran its own ASR at the same time as the session's after-reply ASR (two audio
+  requests at once: both slots busy, ~0 % CPU). The builder now waits for the session's own transcript (`sm.last_user_text()`). After a restart the full
+  spoken suite ran clean. Rules that remain: one orchestrator only, never two audio chat requests at once.
+- **Verified by voice:** `python3 backend/creator_client.py` (orb app quit, one orchestrator) speaks pasta → "make it for six" → timer → chat → "I'm done" through
+  the real voice path (real ASR, real builder). Recipe + ingredients appear, six rescales them (`builder.servings_fix`, because the 2B often resends the old
+  numbers), the timer starts, chat builds nothing, "I'm done" clears (`CLEAR_RE`, no model call).
+- Builder lessons: examples sent as chat history work, but an example that EQUALS a likely request makes the model say it's already done (prose);
+  keep examples about other things (banana bread, 25-minute timer). Spoken number words become digits first (`builder.digits`).
 - Real Electron: the actual window resize, click-through while unfocused, first click on a widget, focus stealing, full-screen apps and multiple
   displays are untested (the page logic was only checked in a browser). `ORB_PANEL=1` is an untested non-activating-panel option.
 - Hold-to-talk by synthetic ⌥ key events isn't seen by the key hook; use ⌥Space (hands-free toggle) for scripted tests.

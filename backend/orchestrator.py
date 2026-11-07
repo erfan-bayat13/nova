@@ -117,6 +117,9 @@ You: How about Mochi or Luna?"""
 # After a voice reply: this spoken line (taught in VOICE_SYSTEM) means "build it". The builder (Connection.build) then
 # turns the user's last request into canvas tool calls on the chat endpoint, while Nova has already answered.
 BUILD_NOW_RE = re.compile(r"\b(putting|adding|setting up|updating|changing|clearing|removing)\b[^.?!]*\bcanvas\b", re.I)
+# "I'm done" and friends clear the canvas without asking the model: it is the one request that must never be missed
+# (the 2B sometimes answers it with prose) and the words are unambiguous. Everything else goes to the builder.
+CLEAR_RE = re.compile(r"\b(i'?m|i am|we'?re|we are|all)\s+(all\s+)?(done|finished)\b|\bclear (it|that|this|everything|the (canvas|screen))\b|\bthat'?s (all|everything)\b|\bstart over\b", re.I)
 BUILD_STEPS = 3     # model calls per build: a follow-up only happens when a tool call failed, so the model can fix it
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
 MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
@@ -471,10 +474,18 @@ class Connection:
                 if not request:
                     return
                 t_asr = time.time() - t0
+                if self.canvas and CLEAR_RE.search(request):
+                    out, result = to_canvas("clear_canvas", {}, self.canvas)
+                    for msg in out:
+                        await self.send(msg)
+                    log(f"build {request[:50]!r}: cleared the canvas (no model call), asr {t_asr:.1f}s")
+                    return
                 types = self.widgets or tools_mod.all_widget_types()
                 tools = builder.tool_list(types)
                 msgs = builder.messages(request, compact_canvas(self.canvas, "On the canvas now, for reference only, never read this out"), types)
                 steps = made = 0
+                nudged = False
+                before = json.loads(json.dumps(self.canvas))  # to compare with after the model's updates (servings_fix)
                 while steps < BUILD_STEPS:
                     steps += 1
                     d = await asyncio.to_thread(_post, "/v1/chat/completions",
@@ -504,8 +515,19 @@ class Connection:
                         log(f"  build {name}({json.dumps(args, ensure_ascii=False)[:110]}) -> {result}")
                         msgs.append({"role": "tool", "tool_call_id": c.get("id", ""), "content": json.dumps(result)})
                         failed |= not result.get("ok", True)
-                    if not failed:  # everything worked: no follow-up call (each one costs seconds)
+                    if not failed:  # everything worked: no follow-up call (each one costs seconds)...
+                        recipe_alone = "recipe" in self.canvas and "ingredients" not in self.canvas
+                        if recipe_alone and not nudged and steps < BUILD_STEPS:  # ...except the one cooking always needs: the 2B often stops after the recipe
+                            nudged = True
+                            msgs.append({"role": "user", "content": 'Also add the ingredients checklist for that recipe (id "ingredients").'})
+                            continue
                         break
+                for name, args in builder.servings_fix(builder.digits(request), before, self.canvas):
+                    out, result = to_canvas(name, args, self.canvas)
+                    for msg in out:
+                        await self.send(msg)
+                    made += bool(out)
+                    log(f"  build fix {name}({json.dumps(args, ensure_ascii=False)[:100]}) -> {result}")
                 log(f"build {request[:50]!r}: {made} canvas changes in {steps} steps, asr {t_asr:.1f}s, total {time.time() - t0:.1f}s")
             except Exception as e:
                 log(f"build failed: {type(e).__name__}: {e}")
