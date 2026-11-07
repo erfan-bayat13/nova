@@ -82,6 +82,11 @@ function createWindow() {
     win.loadFile(path.join(ROOT, 'ui', 'dist', 'index.html'), { query: { orb: '1', ws } });
   }
   win.on('closed', () => { win = null; });
+  // the page's [look] / [timing] logs show up in this terminal too (no need to open DevTools)
+  win.webContents.on('console-message', (e, _level, message) => {
+    const msg = typeof message === 'string' ? message : e.message;
+    if (msg && /^\[(look|timing)\]/.test(msg)) console.log(msg);
+  });
 }
 
 const pttLabel = () => PTT_KEY.replace('AltRight', 'right ⌥').replace('MetaRight', 'right ⌘').replace('CtrlRight', 'right ⌃');
@@ -122,12 +127,20 @@ async function captureScreen() {
   if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') return { error: 'denied' };
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   const k = MAX_SIDE / Math.max(display.size.width, display.size.height);
-  const sources = await desktopCapturer.getSources({
-    types: ['screen'],
-    thumbnailSize: { width: Math.round(display.size.width * k), height: Math.round(display.size.height * k) },
-  });
-  const src = sources.find((s) => s.display_id === String(display.id)) ?? sources[0];
-  if (!src || src.thumbnail.isEmpty()) return { error: 'empty' };
+  // macOS sometimes hands back empty pictures right after launch or while a screen wakes, so try a few times
+  let src = null;
+  for (let attempt = 1; attempt <= 4 && !src; attempt++) {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: Math.round(display.size.width * k), height: Math.round(display.size.height * k) },
+    });
+    // the screen the cursor is on first, then any other screen that gives a picture
+    const ordered = [...sources.filter((s) => s.display_id === String(display.id)), ...sources.filter((s) => s.display_id !== String(display.id))];
+    src = ordered.find((s) => !s.thumbnail.isEmpty()) ?? null;
+    console.log(`[look] screens (try ${attempt}): ${sources.map((s) => `${s.name} ${JSON.stringify(s.thumbnail.getSize())}`).join(', ')}; cursor display ${display.id}`);
+    if (!src) await new Promise((r) => setTimeout(r, 300));
+  }
+  if (!src) return { error: 'empty' };
   let img = src.thumbnail;
   const { width, height } = img.getSize();
   if (Math.max(width, height) > MAX_SIDE) {

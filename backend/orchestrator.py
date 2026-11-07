@@ -469,6 +469,7 @@ class Connection:
                 log(f"  rejected {e}")
                 await self.send({"type": "error", "text": str(e)})
                 return
+            log(f"  see {source}: {len(jpeg)} bytes{' (waiting for the previous turn)' if self.lock.locked() else ''}")
             self.spawn(self.see_turn(jpeg, source, question))
         elif t == "text":  # dev/testing input, see docs/PROTOCOL.md
             run = self.voice_turn if self.mode == "voice" else self.turn

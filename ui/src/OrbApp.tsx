@@ -97,10 +97,11 @@ export function OrbApp() {
     if (heldRef.current) return;
     if (!c.connected) return flash('Not connected');
     const id = ++lookId.current;
+    console.log(`[look] ${source} requested`);
     const alive = () => lookId.current === id;
     setShown(true);
     setSeeing(source);
-    const fail = (msg: string) => { if (alive()) { setSeeing(null); flash(msg); } };
+    const fail = (msg: string) => { console.log(`[look] failed: ${msg}`); if (alive()) { setSeeing(null); flash(msg); } };
     try {
       let image: string | null = null;
       if (source === 'camera') {
@@ -121,6 +122,7 @@ export function OrbApp() {
       }
       if (!alive()) return;
       if (!image) return fail('Capture failed');
+      console.log(`[look] ${source} frame ready (${Math.round(image.length / 1024)} KB), sending`);
       c.see(source, image); // the frame goes out once, then nothing is kept
       setSeeing(null);
     } catch (e) {
