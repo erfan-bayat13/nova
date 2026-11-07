@@ -39,6 +39,20 @@
         "ui/dist"
       ],
       "port": 5174
+    },
+    {
+      "name": "deck",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8091",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "deck/keynote"
+      ],
+      "port": 8091
     }
   ]
 }

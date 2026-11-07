@@ -54,6 +54,7 @@ type Shell = {
   onPtt: (fn: (kind: 'down' | 'up' | 'cancel') => void) => void;
   onLook: (fn: (source: LookKind) => void) => void;
   mediaAccess: (kind: Source) => Promise<string>; // systemPreferences.getMediaAccessStatus, 'granted' when allowed
+  lookPreview: (mode: 'show' | 'hold' | 'hide') => void; // camera window beside the orb while it looks
   captureScreen: () => Promise<{ image: string } | { error: string }>;
   captureArea: () => Promise<{ image: string } | { error: string }>; // drag a rectangle; error 'cancelled' if abandoned
 };
@@ -205,6 +206,7 @@ export function OrbApp() {
   const stopLook = useCallback(() => {
     lookId.current++;
     setSeeing(null);
+    shell?.lookPreview?.('hide');
   }, []);
 
   const look = useCallback(async (kind: LookKind) => {
@@ -216,12 +218,13 @@ export function OrbApp() {
     const alive = () => lookId.current === id;
     setShown(true);
     setSeeing(source);
-    const fail = (msg: string) => { console.log(`[look] failed: ${msg}`); if (alive()) { setSeeing(null); flash(msg); } };
+    const fail = (msg: string) => { console.log(`[look] failed: ${msg}`); if (alive()) { setSeeing(null); flash(msg); shell?.lookPreview?.('hide'); } };
     try {
       let image: string | null = null;
       if (source === 'camera') {
         if (shell && (await shell.mediaAccess('camera')) !== 'granted') return fail('Camera access off');
         if (!alive()) return;
+        shell?.lookPreview?.('show'); // live camera window next to the orb
         image = await grabCamera(alive);
       } else {
         if (!shell) return fail('Screen needs the desktop app');
@@ -243,6 +246,7 @@ export function OrbApp() {
       console.log(`[look] ${kind} frame ready (${Math.round(image.length / 1024)} KB), sending`);
       c.see(source, image); // the frame goes out once, then nothing is kept
       setSeeing(null);
+      if (source === 'camera') shell?.lookPreview?.('hold'); // stays a moment, then closes
     } catch (e) {
       console.warn('[look]', e);
       fail(source === 'camera' ? ((e as Error).name === 'NotAllowedError' ? 'Camera access off' : 'Camera failed') : 'Screen failed');

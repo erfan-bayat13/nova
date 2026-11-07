@@ -100,21 +100,25 @@ User: No.
 You: No problem, I won't look.
 
 You can also build things on a canvas that floats on their screen: recipes, checklists, timers, lists, notes, numbers, tables, charts, plans. A note in parentheses starting "(On the canvas now" lists what is already there; never read it out loud.
-When they ask you to make, show, start, track, plan, add, change or remove something on the canvas, or they say what they are doing and a canvas would help (cooking, a timer, a list, a trip plan once you know the details), start with exactly this sentence: "Okay, putting that on the canvas." Then add one or two friendly sentences: a quick thought or a question. When they say they are done or ask you to clear it, start with exactly: "Okay, clearing the canvas." and say a warm goodbye. For plain questions and chat, just answer, and keep the conversation going. A trip, project or idea they have only just mentioned, with no details yet, is a conversation, not a canvas request: talk it through and ask your questions first, with no canvas line. Examples:
+Behind the scenes a helper puts things on their screen whenever they ask (a recipe, a timer, a list, a plan, a change, clearing it). You never do that yourself and you never announce it: do not say "canvas", "screen", "widget", "putting that up" or "clearing". Just answer like a relaxed friend would: react to what they said, add a quick thought, and ask one casual follow-up question so the conversation keeps going. Remember everything said earlier in this conversation and build on it. If they ask for something to be made, started, changed or cleared, say it is handled in your own words ("Sure, coming right up.", "Done, fresh start!"). Always repeat the exact numbers they said, never change them and then keep talking. If they only mention what they are doing, chat about it and, at most once, offer ("want me to set up a recipe for that?"). Examples:
 User: I'm cooking pasta for four.
-You: Okay, putting that on the canvas. Pasta night, nice! Are you doing a homemade sauce or keeping it easy?
-User: Start a ten minute timer.
-You: Okay, putting that on the canvas. Ten minutes, I'll keep it ticking.
+You: Ooh, pasta night, nice! Are you doing a homemade sauce or keeping it easy?
+User: Yeah, set up a recipe for it.
+You: Sure thing, four plates of pasta coming right up. Do you want a garlicky sauce or something creamy?
+User: Start a twenty minute timer.
+You: Twenty minutes, I'll keep it ticking. What are you waiting on?
 User: Make it for six.
-You: Okay, putting that on the canvas. A bigger crowd, even better!
+You: Six it is, a bigger crowd, even better! Is it a special occasion?
 User: I want to book a trip to Spain.
 You: Ooh, Spain, I love that! When are you thinking of going, and are you more into beaches, or cities and food?
 User: I'm thinking of redoing my living room.
 You: Ooh, fun project! What style are you drawn to, and is it more a fresh coat of paint or a full makeover?
 User: Probably June for ten days, mostly cities and food.
-You: Okay, putting that on the canvas. Madrid, Barcelona and Seville make a great mix for ten days. Do you want mostly trains between them, or a couple of short flights?
+You: Madrid, Barcelona and Seville make a great mix for ten days. Want me to sketch a plan, or keep brainstorming first?
+User: Yes, plan it.
+You: Great, sketching it now. Do you want mostly trains between them, or a couple of short flights?
 User: I'm done, thanks.
-You: Okay, clearing the canvas. Anytime, that was fun!
+You: Anytime, all cleared! That was fun, what are you up to next?
 User: How long does pasta take to cook?
 You: About ten minutes for most pasta, until it's tender but still has a bite. Do you like it with a little bite or softer?
 User: What's a good name for a cat?
@@ -124,7 +128,7 @@ You: How about Mochi or Luna? Are you getting a kitten, or adopting an older one
 BUILD_NOW_RE = re.compile(r"\b(putting|adding|setting up|updating|changing|clearing|removing)\b[^.?!]*\bcanvas\b", re.I)
 # "I'm done" and friends clear the canvas without asking the model: it is the one request that must never be missed
 # (the 2B sometimes answers it with prose) and the words are unambiguous. Everything else goes to the builder.
-CLEAR_RE = re.compile(r"\b(i'?m|i am|we'?re|we are|all)\s+(all\s+)?(done|finished)\b|\bclear (it|that|this|everything|the (canvas|screen))\b|\bthat'?s (all|everything)\b|\bstart over\b", re.I)
+CLEAR_RE = re.compile(r"\b(i'?m|i am|we'?re|we are|all)\s+(all\s+)?(done|finished)\b|\bclear (it|that|this|everything|the (canvas|screen))\b|\bthat'?s (all|everything)\b|\bstart over\b|\b(get rid of|wipe|remove|delete|clean up) (it|that|this|everything|all of it|the (canvas|screen|board))\b|\bclear (all|out)\b", re.I)
 COMMENT_AFTER_BUILD = os.environ.get("NOVA_BUILD_COMMENT", "1") == "1"  # Nova remarks on what she built, in her own voice
 # Nova sometimes says the canvas line for a plain question about the topic at hand ("how long does pasta take?"). A bare
 # question with no canvas words in it builds nothing, so a wrong line never puts an unwanted widget on the screen.
@@ -134,6 +138,18 @@ CANVAS_WORDS_RE = re.compile(r"\b(make|show|add|put|start|set|create|track|plan|
 # to Claude, whose answer arrives as a card with a spoken one-liner. Only question-shaped requests that look hard (or are long).
 HARD_Q_RE = re.compile(r"\b(explain|compare|comparison|differences?|pros and cons|best way|walk me through|step[- ]by[- ]step|in detail|"
                        r"recommend|analy[sz]e|summar[iy][sz]e|which is better|should i (buy|get|choose|take|use)|how (does|do|can|should) .{12,})", re.I)
+BIG_JOB_RE = re.compile(r"\b(itinerary|budget|calculate|work out|research|analy[sz]e|compare|comparison|pros and cons|chart|graph|"
+                        r"meal plan|workout plan|study plan|schedule for|plan (a|my|our|the) .{6,}|\d+[- ]day|business plan|essay|report)\b", re.I)
+
+
+def is_hard(text: str) -> bool:
+    """Big jobs go to Claude (escalate.py): any request shape, not only questions. Timers and clearing stay local."""
+    t = text or ""
+    if CLEAR_RE.search(t) or re.search(r"\b(timer|countdown)\b", t, re.I) or len(t.split()) < 5:
+        return False
+    return bool(HARD_Q_RE.search(t) or BIG_JOB_RE.search(t) or len(t.split()) >= 18)
+
+
 ASK_RE = re.compile(r"^\s*(explain|compare|tell me|walk me|give me|help me understand)\b", re.I)
 BUILD_STEPS = 3     # model calls per build: a follow-up only happens when a tool call failed, so the model can fix it
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
@@ -474,23 +490,20 @@ class Connection:
 
     def maybe_hard_question(self, reply: str):
         """After a voice reply that did not start a build: a hard question also goes to Claude."""
-        if not BUILD_NOW_RE.search(reply or "") and not self.build_lock.locked() and (self.last_pcm or self.last_text):
+        if self.last_pcm or self.last_text:  # build() steps aside for big jobs
             self.spawn(self._hard_question(self.last_text))
 
     async def _hard_question(self, typed: str = ""):
         text = (typed or await self.sm.last_user_text()).strip()
         words = len(text.split())
-        if words < 5 or not (QUESTION_RE.match(text) or ASK_RE.match(text)):
-            return
-        if not (HARD_Q_RE.search(text) or words >= 18):
+        if not is_hard(text):
             return
         log(f"  hard question -> Claude: {text[:80]!r}")
         self.start_escalation(text)
 
     def maybe_build(self, text: str):
-        """After a voice reply: the spoken line "Okay, putting that on the canvas." starts the builder."""
-        if BUILD_NOW_RE.search(text or "") and (self.last_pcm or self.last_text):
-            log("  build: Nova announced it")
+        """After every voice reply: build() decides from the user's own words whether anything goes on the canvas."""
+        if self.last_pcm or self.last_text:  # build() decides from what the user asked
             self.spawn(self.build(self.last_pcm, self.last_text))
 
     async def build(self, pcm: bytes | None, text: str = ""):
@@ -499,20 +512,35 @@ class Connection:
         canvas as they are made. Nova has already answered out loud; this runs behind her."""
         async with self.build_lock:
             t0 = time.time()
-            await self.send({"type": "orb", "state": "thinking"})
             try:
                 request = (text or await self.sm.last_user_text()).strip()  # the transcript the session makes anyway
+                log(f"  build heard: {request[:80]!r}")
                 if not request:
                     return
                 t_asr = time.time() - t0
-                if QUESTION_RE.match(request) and not CANVAS_WORDS_RE.search(request):
-                    log(f"build {request[:50]!r}: just a question, nothing to build")
-                    return
                 if self.canvas and CLEAR_RE.search(request):
                     out, result = to_canvas("clear_canvas", {}, self.canvas)
                     for msg in out:
                         await self.send(msg)
                     log(f"build {request[:50]!r}: cleared the canvas (no model call), asr {t_asr:.1f}s")
+                    return
+                last_nova = next((t for r_, t in reversed(self.sm.recent_dialogue(4)) if r_ != "user"), "")
+                said_yes = re.search(r"\b(yes|yeah|yep|sure|please|do it|go ahead)\b", request, re.I) and re.search(r"want me to|shall i|should i|set up|sketch", last_nova, re.I)
+                if not CANVAS_WORDS_RE.search(request) and not said_yes:
+                    log(f"build {request[:50]!r}: no explicit ask, just chatting")
+                    return
+                if is_hard(request):
+                    log(f"build {request[:50]!r}: big job, Claude handles it")
+                    return
+                await self.send({"type": "orb", "state": "thinking"})
+                tm = re.search(r"(\d+)\s*(minutes?|mins?|hours?|seconds?|secs?)\b", builder.digits(request), re.I)
+                if tm and re.search(r"\b(timer|countdown|remind)", request, re.I):  # exact: the 2B kept saying 10 minutes
+                    n, u = int(tm.group(1)), tm.group(2).lower()
+                    mins = n * 60 if u.startswith("hour") else (n / 60 if u.startswith("sec") else n)
+                    out, result = to_canvas("start_timer", {"minutes": mins, "label": "Timer"}, self.canvas)
+                    for msg in out:
+                        await self.send(msg)
+                    log(f"build {request[:50]!r}: timer {mins} min (no model call)")
                     return
                 types = self.widgets or tools_mod.all_widget_types()
                 tools = builder.tool_list(types)
@@ -541,7 +569,10 @@ class Connection:
                                 args = json.loads(args or "{}")
                             except ValueError:
                                 args = {}
-                        if name == "escalate":
+                        if "banana" in json.dumps(args).lower() and "banana" not in request.lower() and "banana" not in (convo_note_text := convo.lower()):
+                            result = {"ok": True}  # the 2B copied its banana bread example: drop it
+                            log("  build: dropped a banana bread leak")
+                        elif name == "escalate":
                             result = self.start_escalation(args.get("task", request))
                         else:
                             out, result = to_canvas(name, args, self.canvas)

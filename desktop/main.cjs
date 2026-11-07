@@ -180,6 +180,38 @@ async function mediaAccess(kind) {
   return systemPreferences.getMediaAccessStatus(kind);
 }
 
+// A small live camera window next to the orb while it looks through the camera, so you can see what it sees.
+// 'show' opens it, 'hold' keeps it a moment after the picture was taken and then closes it, 'hide' closes it now.
+const PREVIEW_W = 220, PREVIEW_H = 172, PREVIEW_HOLD_MS = 2500;
+let previewWin = null, previewTimer = null;
+function lookPreview(mode) {
+  clearTimeout(previewTimer);
+  if (mode === 'hide') { if (previewWin && !previewWin.isDestroyed()) previewWin.close(); return; }
+  if (mode === 'hold') { previewTimer = setTimeout(() => lookPreview('hide'), PREVIEW_HOLD_MS); return; }
+  if (mode !== 'show' || !win) return;
+  if (previewWin && !previewWin.isDestroyed()) return;
+  const b = win.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  const small = b.width <= SIZE * 2; // the orb alone in its window; with the canvas open the window is the whole screen
+  const bottom = small ? b.y + b.height : wa.y + wa.height - MARGIN;
+  // left of the orb, or right of it when there is no room on the left
+  let x = small ? b.x - PREVIEW_W : wa.x + wa.width - SIZE - MARGIN - PREVIEW_W;
+  if (x < wa.x) x = b.x + b.width;
+  previewWin = new BrowserWindow({
+    width: PREVIEW_W, height: PREVIEW_H, x: Math.round(x), y: Math.round(Math.max(wa.y, bottom - PREVIEW_H - 8)),
+    frame: false, transparent: true, hasShadow: false, resizable: false, minimizable: false, maximizable: false,
+    fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, focusable: false, show: false,
+    backgroundColor: '#00000000',
+  });
+  previewWin.setAlwaysOnTop(true, 'floating');
+  previewWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  previewWin.setContentProtection(true); // like the orb: the screen look doesn't see it
+  previewWin.setIgnoreMouseEvents(true);
+  previewWin.loadFile(path.join(__dirname, 'camera-preview.html'));
+  previewWin.once('ready-to-show', () => previewWin?.showInactive());
+  previewWin.on('closed', () => { previewWin = null; });
+}
+
 // A still of one screen at the given pixel size: the one the cursor is on, else any screen that gives a picture.
 // macOS sometimes hands back empty pictures right after launch or while a screen wakes, so try a few times.
 async function grabDisplay(display, widthPx, heightPx) {
@@ -335,6 +367,7 @@ app.whenReady().then(async () => {
     interactive = !!on;
     win.setIgnoreMouseEvents(!interactive, { forward: true });
   });
+  ipcMain.on('look-preview', (_e, mode) => lookPreview(mode));
   ipcMain.handle('media-access', (_e, kind) => mediaAccess(kind));
   ipcMain.handle('capture-screen', () => captureScreen());
   ipcMain.handle('capture-area', () => captureArea());
