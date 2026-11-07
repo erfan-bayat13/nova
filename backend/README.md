@@ -80,6 +80,7 @@ Measured 2026-11-07 (M2 8 GB, warm server, text input):
 | `escalate.py` | **Stub** for the Claude path. Returns a placeholder `html` widget after 1.5 s. Its docstring has the contract and the plan. |
 | `test_client.py` | Fake canvas for end-to-end tests |
 | `voice_client.py` | Fake desktop orb for the voice mode: timings, saved audio, interrupt test |
+| `see_client.py` | Fake desktop orb for "eyes on request": sends a `see` frame (JPEG + question), checks the spoken answer and the bad-frame errors |
 
 ## How a turn works
 

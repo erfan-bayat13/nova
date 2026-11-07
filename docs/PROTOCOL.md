@@ -20,6 +20,7 @@ orchestrator drops it, and anything the system says out loud arrives as a `say` 
 | `update` | `id`, `props` | Merges `props` into the widget. Changed words and numbers roll in place. |
 | `remove` | `id` | The widget shrinks back into the orb. |
 | `clear` | – | Removes all widgets, one after another. |
+| `error` | `text` | **Voice mode.** The orchestrator refused a client message (e.g. a bad `see` frame). `text` says why, in plain words. Nothing else changes: the orb state is untouched and no reply follows. |
 
 `importance` decides placement. The model never sends coordinates.
 
@@ -36,6 +37,7 @@ orchestrator drops it, and anything the system says out loud arrives as a `say` 
 | `orb_down` | – | The user starts holding the orb (or Space). Start listening. |
 | `orb_up` | – | The user lets go. End of the utterance. |
 | `orb_cancel` | – | Drop the audio, no turn. Sent with `orb_down` to just stop a reply, or when a conversation ends mid-utterance. |
+| `see` | `source`: `camera` \| `screen`, `image`: base64 JPEG, `question?`: string | **Voice mode, eyes on request.** The orb sends one frame (a webcam or screen capture) and optionally a question. The orchestrator describes the image with the model and answers the question (default `"What am I looking at?"`) out loud: `speech_start`, binary PCM16 24 kHz audio, `speech_end`, the same as a voice reply. `image` is raw base64 of a JPEG, **without** the `data:` prefix, at most **1.5 MB decoded** (`1,500,000` bytes). Rejected with `error` (no reply) if `image` is missing, not valid base64, or too large, or if `source` is not `camera`/`screen`, or if the client is not in voice mode. A `see` is a turn like any other: `orb_down` during it interrupts it. |
 
 The desktop orb is push to talk (hold Right ⌥). In voice mode the orchestrator passes the mic frames to the model **as they arrive** between `orb_down` and `orb_up`, instead of buffering them, so the reply starts ~0.25 s after `orb_up`. Its optional hands-free mode detects turns itself (`ui/src/conversation.ts`) and sends the same messages. llama-server ignores the realtime `turn_detection` setting, so there is no server-side VAD.
 | `event` | `id`, `name`, `data` | A widget event, e.g. `item_checked`, `timer_done` |
@@ -46,6 +48,8 @@ The desktop orb is push to talk (hold Right ⌥). In voice mode the orchestrator
 **Interrupting:** `orb_down` while a reply is playing stops it. The client stops playback and drops
 any frames still in flight; the orchestrator stops forwarding audio and cancels the model's reply
 (`response.cancel`, measured: the turn ends ~0.2 s later), so the next turn starts right away.
+
+A `see` reply is interrupted the same way: `orb_down` during the image description or the reply stops it. The image is never sent into the realtime session (it takes no images): the model describes it on its chat endpoint first, and the description goes into the conversation as text.
 
 **Speech out by mode:** canvas mode speaks `say` lines with the browser voice (tool turns must stay
 text-only: with audio output on, the model stops calling tools). Voice mode streams LFM's own voice.

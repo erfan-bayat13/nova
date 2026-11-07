@@ -325,6 +325,11 @@ class SessionManager:
         had so far (Result.cancelled); audio deltas after this point are not passed to on_audio."""
         self._cancel = True
 
+    def reset_cancel(self):
+        """Call at the start of each turn. _respond does not clear cancel() itself, so a barge-in that lands
+        while an image is still being described (see) stops that turn before its reply starts."""
+        self._cancel = False
+
     async def _turn(self, send_items, incoming: int, modalities, entry=None, rotated=False,
                     tool_choice: str = "auto", respond: bool = True, on_audio=None) -> Result:
         """Send items + response.create. On server loss: restart, reopen, resend once."""
@@ -352,7 +357,6 @@ class SessionManager:
     async def _respond(self, modalities, tool_choice: str = "auto", on_audio=None) -> Result:
         """tool_choice: "auto" | "none" | "required" (the server rejects forcing a specific function).
         on_audio(pcm24k_chunk): called (sync or async) with every audio delta as it arrives, for streaming."""
-        self._cancel = False
         resp = {"output_modalities": list(modalities)}
         if tool_choice != "auto":
             resp["tool_choice"] = tool_choice
@@ -534,14 +538,22 @@ class SessionManager:
             self.history.append({"role": "tool", "text": p[:200]})
         return await self._turn(send, n, modalities, tool_choice=tool_choice, respond=respond)
 
-    async def see(self, jpeg: bytes, question: str, modalities=("text", "audio")) -> Result:
-        """Realtime takes no images: describe the frame on the chat endpoint, then answer in the session."""
+    async def see(self, jpeg: bytes, question: str, source: str = "camera", modalities=("text", "audio"),
+                  on_audio=None) -> Result:
+        """Realtime takes no images: describe the frame on the chat endpoint, then answer in the session.
+        cancel() during the description returns Result(cancelled=True) without starting a reply."""
         uri = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()
+        if self._cancel:
+            return Result(cancelled=True)
         desc = await asyncio.to_thread(chat, [{"role": "system", "content": SEE_SYS},
                                               {"role": "user", "content": [
                                                   {"type": "image_url", "image_url": {"url": uri}},
                                                   {"type": "text", "text": question}]}])
-        return await self.send_text(f"[Camera sees: {clean(desc)}]\n{question}", modalities, remember=False)
+        if self._cancel:
+            return Result(cancelled=True)
+        what = "The camera sees" if source == "camera" else "The screen shows"
+        return await self.send_text(f"[{what}: {clean(desc)}]\n{question}", modalities, remember=False,
+                                    on_audio=on_audio)
 
     @property
     def stats(self):

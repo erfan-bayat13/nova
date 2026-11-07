@@ -8,6 +8,8 @@ Two modes, picked by the client's `hello` (docs/PROTOCOL.md):
   voice            — speech to speech, no tools: the model answers in its OWN voice, streamed to the client
                      as binary PCM16 24 kHz frames between `speech_start` and `speech_end`. Used by the
                      floating desktop orb (desktop/). `orb_down` during a reply interrupts it.
+                     A `see` frame (camera/screen JPEG + question) is described on the chat endpoint and
+                     answered with the same voice reply path; the image never goes into the realtime session.
                      Mic audio is passed to the model WHILE the user is still talking (stream_* in the
                      session manager), so the reply starts ~0.25 s after `orb_up` instead of ~0.5 s.
 
@@ -24,7 +26,7 @@ the recipe AND the ingredients in one utterance.
 """
 from __future__ import annotations
 
-import array, asyncio, json, os, re, sys, time
+import array, asyncio, base64, json, os, re, sys, time
 
 from websockets.asyncio.server import serve
 
@@ -67,6 +69,8 @@ Answer naturally, like a friend on a call: usually one to three short sentences.
 No markdown, lists, emojis, sound effects or stage directions. Say numbers and units the way people speak them.
 If you didn't hear or understand something, say so and ask them to repeat instead of guessing."""
 MAX_REPLY_AUDIO_S = 35  # speech quality drops past ~30-40 s (prototype/README.md): cut it off there
+MAX_IMAGE_BYTES = 1_500_000        # `see` frames: decoded JPEG size limit (docs/PROTOCOL.md)
+SEE_DEFAULT_QUESTION = "What am I looking at?"
 
 
 def log(*a):
@@ -143,6 +147,30 @@ def compact_canvas(canvas: dict) -> str:
         return v
     parts = [f'{wid} ({w["widget"]}): {json.dumps(short(w["props"]), ensure_ascii=False)}' for wid, w in canvas.items()]
     return "(On screen now, for reference only, never read this out: " + "; ".join(parts) + ")"
+
+
+def parse_see(m: dict) -> tuple[bytes, str, str]:
+    """Validate a `see` frame (docs/PROTOCOL.md). Returns (jpeg, source, question); raises ValueError with the
+    message to send back to the client."""
+    source = m.get("source")
+    if source not in ("camera", "screen"):
+        raise ValueError('see: source must be "camera" or "screen"')
+    image = m.get("image")
+    if not isinstance(image, str) or not image:
+        raise ValueError("see: image missing")
+    if image.startswith("data:"):
+        raise ValueError("see: send raw base64, without the data: prefix")
+    if len(image) > MAX_IMAGE_BYTES * 4 // 3 + 4:  # cheap check before decoding
+        raise ValueError(f"see: image larger than {MAX_IMAGE_BYTES} bytes")
+    try:
+        jpeg = base64.b64decode(image, validate=True)
+    except ValueError:  # binascii.Error is a ValueError
+        raise ValueError("see: image is not valid base64")
+    if len(jpeg) > MAX_IMAGE_BYTES:
+        raise ValueError(f"see: image larger than {MAX_IMAGE_BYTES} bytes")
+    q = m.get("question")
+    question = q.strip() if isinstance(q, str) and q.strip() else SEE_DEFAULT_QUESTION
+    return jpeg, source, question
 
 
 class Connection:
@@ -251,6 +279,11 @@ class Connection:
         async with self.lock:
             await self._voice_reply(text=text, pcm=pcm, label=label)
 
+    async def see_turn(self, jpeg: bytes, source: str, question: str):
+        """Voice mode, `see` frame: describe the image, then answer the question out loud (same reply path)."""
+        async with self.lock:
+            await self._voice_reply(see=(jpeg, source, question), label=f"see {source}: {question[:40]!r}")
+
     async def utterance(self, released: asyncio.Event):
         """Voice mode, orb_down → orb_up: stream the mic into the model while the user talks, reply on release.
         `released` is created in on_message (not here) so an orb_cancel right after orb_down always finds it."""
@@ -285,7 +318,7 @@ class Connection:
             await self._voice_reply(stream=True, label=f"{secs:.1f}s audio, {voiced:.1f}s voiced, streamed")
 
     async def _voice_reply(self, *, text: str | None = None, pcm: bytes | None = None, stream: bool = False,
-                           label: str = ""):
+                           see: tuple | None = None, label: str = ""):
         t0 = time.time()
         self.interrupted, self.speaking = False, False
         await self.send({"type": "orb", "state": "thinking"})
@@ -310,10 +343,17 @@ class Connection:
 
         try:
             await self.ensure_session()
+            self.sm.reset_cancel()  # a barge-in from an earlier turn must not stop this one
             mods = ("text", "audio")
-            r = (await self.sm.stream_finish(mods, on_audio=on_audio) if stream
-                 else await self.sm.send_audio(pcm, modalities=mods, on_audio=on_audio) if pcm is not None
-                 else await self.sm.send_text(text, modalities=mods, on_audio=on_audio))
+            if see is not None:
+                jpeg, source, question = see
+                r = await self.sm.see(jpeg, question, source=source, modalities=mods, on_audio=on_audio)
+            elif stream:
+                r = await self.sm.stream_finish(mods, on_audio=on_audio)
+            elif pcm is not None:
+                r = await self.sm.send_audio(pcm, modalities=mods, on_audio=on_audio)
+            else:
+                r = await self.sm.send_text(text, modalities=mods, on_audio=on_audio)
             if self.speaking:
                 await self.send({"type": "speech_end", "text": r.text})
             elif r.text and not self.interrupted:  # no audio came back: let the client voice the text
@@ -419,6 +459,17 @@ class Connection:
                 log(f"ignored utterance: {secs:.1f}s audio, {voiced:.2f}s voiced")
                 if not self.lock.locked():
                     await self.send({"type": "orb", "state": "idle"})
+        elif t == "see":  # camera or screen frame, voice mode only (docs/PROTOCOL.md)
+            if self.mode != "voice":
+                await self.send({"type": "error", "text": "see: only in voice mode"})
+                return
+            try:
+                jpeg, source, question = parse_see(m)
+            except ValueError as e:
+                log(f"  rejected {e}")
+                await self.send({"type": "error", "text": str(e)})
+                return
+            self.spawn(self.see_turn(jpeg, source, question))
         elif t == "text":  # dev/testing input, see docs/PROTOCOL.md
             run = self.voice_turn if self.mode == "voice" else self.turn
             self.spawn(run(text=m.get("text", ""), label=m.get("text", "")[:40]))
