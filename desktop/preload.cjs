@@ -7,7 +7,8 @@ contextBridge.exposeInMainWorld('orbShell', {
   hide: () => ipcRenderer.send('hide'),
   onHotkey: (fn) => ipcRenderer.on('hotkey', () => fn()),
   onPtt: (fn) => ipcRenderer.on('ptt', (_e, kind) => fn(kind)), // hold-to-talk key: 'down' | 'up' | 'cancel'
-  onLook: (fn) => ipcRenderer.on('look', (_e, source) => fn(source)), // shortcut or menu: 'camera' | 'screen'
+  onLook: (fn) => ipcRenderer.on('look', (_e, source) => fn(source)), // shortcut or menu: 'camera' | 'screen' | 'area'
   mediaAccess: (kind) => ipcRenderer.invoke('media-access', kind), // 'granted' | 'denied' | 'restricted' | 'not-determined'
   captureScreen: () => ipcRenderer.invoke('capture-screen'),       // { image } (base64 JPEG) | { error }
+  captureArea: () => ipcRenderer.invoke('capture-area'),           // drag a rectangle: { image } | { error: 'cancelled' | ... }
 });

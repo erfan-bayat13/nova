@@ -30,10 +30,12 @@ type Shell = {
   hide: () => void;
   onHotkey: (fn: () => void) => void;
   onPtt: (fn: (kind: 'down' | 'up' | 'cancel') => void) => void;
-  onLook: (fn: (source: Source) => void) => void;
+  onLook: (fn: (source: LookKind) => void) => void;
   mediaAccess: (kind: Source) => Promise<string>; // systemPreferences.getMediaAccessStatus, 'granted' when allowed
   captureScreen: () => Promise<{ image: string } | { error: string }>;
+  captureArea: () => Promise<{ image: string } | { error: string }>; // drag a rectangle; error 'cancelled' if abandoned
 };
+type LookKind = Source | 'area'; // 'area' is a dragged part of the screen, sent to the model as a 'screen' frame
 const shell = (window as unknown as { orbShell?: Shell }).orbShell;
 
 export function OrbApp() {
@@ -93,11 +95,12 @@ export function OrbApp() {
     setSeeing(null);
   }, []);
 
-  const look = useCallback(async (source: Source) => {
+  const look = useCallback(async (kind: LookKind) => {
+    const source: Source = kind === 'area' ? 'screen' : kind;
     if (heldRef.current) return;
     if (!c.connected) return flash('Not connected');
     const id = ++lookId.current;
-    console.log(`[look] ${source} requested`);
+    console.log(`[look] ${kind} requested`);
     const alive = () => lookId.current === id;
     setShown(true);
     setSeeing(source);
@@ -115,14 +118,17 @@ export function OrbApp() {
           return fail('Screen access off');
         }
         if (!alive()) return;
-        const r = await shell.captureScreen();
+        const r = await (kind === 'area' ? shell.captureArea() : shell.captureScreen());
         if (!alive()) return;
-        if ('error' in r) return fail('Screen capture failed');
+        if ('error' in r) {
+          if (r.error === 'cancelled') { console.log('[look] area cancelled'); setSeeing(null); return; } // nothing to report
+          return fail('Screen capture failed');
+        }
         image = r.image;
       }
       if (!alive()) return;
       if (!image) return fail('Capture failed');
-      console.log(`[look] ${source} frame ready (${Math.round(image.length / 1024)} KB), sending`);
+      console.log(`[look] ${kind} frame ready (${Math.round(image.length / 1024)} KB), sending`);
       c.see(source, image); // the frame goes out once, then nothing is kept
       setSeeing(null);
     } catch (e) {
